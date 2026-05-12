@@ -2,36 +2,50 @@ name: Auto TikTok Publisher
 
 on:
   schedule:
-    - cron: '0 */6 * * *' # يعمل كل 6 ساعات
-  workflow_dispatch: # تشغيل يدوياً للتجربة
+    - cron: '0 */6 * * *' # يعمل كل 6 ساعات (تدريجي)
+  workflow_dispatch: # تشغيل يدوي للتجربة
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # ضروري للسماح لـ Github Action بالكتابة في المستودع
     steps:
-      - name: Checkout
+      - name: 📥 Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: ⚙️ Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Install FFmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: 🎬 Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
 
-      - name: Install Dependencies
+      - name: 📦 Install Dependencies
         run: npm install
 
-      - name: Run Bot
+      - name: 🚀 Run Bot
         env:
           TIKTOK_COOKIES: ${{ secrets.TIKTOK_COOKIES }}
         run: node index.js
 
-      - name: Commit History
+      - name: 💾 Commit & Push History
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add history.json
-          git commit -m "Update history [skip ci]" || echo "No changes"
-          git push
+          
+          # التحقق من وجود ملف السجل قبل محاولة رفعه
+          if [ -f history.json ]; then
+            git add history.json
+            git commit -m "Update history [skip ci]" || echo "No changes to commit"
+            git push origin main
+          else
+            echo "history.json not found, creating and pushing..."
+            echo '{"posted":[]}' > history.json
+            git add history.json
+            git commit -m "Initial history [skip ci]"
+            git push origin main
+          fi
