@@ -5,6 +5,7 @@ import { execSync } from "child_process";
 import puppeteer from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import fetch from "node-fetch";
+import ytdl from 'yt-dlp-exec';
 
 puppeteer.use(StealthPlugin());
 
@@ -22,16 +23,23 @@ const CONFIG = {
     channels: ["Film.Arena", "Chnese-drama", "Drama-Portal", "Neon.History", "drama.box"]
 };
 
-// --- 1. دالة جلب روابط M3U8 ---
+// --- 1. دالة جلب رابط الفيديو باستخدام المحرك الذكي (yt-dlp) ---
 async function getM3U8Url(videoId) {
     try {
-        const response = await fetch(`https://www.dailymotion.com/player/metadata/video/${videoId}`, {
-            headers: { 'User-Agent': CONFIG.userAgent }
+        console.log(`🔍 جاري استخراج الرابط المباشر للفيديو ${videoId} عبر yt-dlp...`);
+        const output = await ytdl(`https://www.dailymotion.com/video/${videoId}`, {
+            dumpSingleJson: true,
+            noCheckCertificates: true,
+            noWarnings: true,
+            addHeader: [
+                `User-Agent:${CONFIG.userAgent}`,
+                'Referer:https://www.dailymotion.com/'
+            ],
         });
-        const data = await response.json();
-        return data.qualities?.auto?.[0]?.url || "";
+        
+        return output.url; // الرابط المستخرج يكون جاهزاً ومصرحاً للتحميل
     } catch (e) {
-        console.error(`❌ خطأ في جلب ميتادات الفيديوا: ${e.message}`);
+        console.error(`❌ فشل استخراج الرابط: ${e.message}`);
         return "";
     }
 }
@@ -79,7 +87,7 @@ async function uploadToTikTok(videoPath, title) {
         await page.setCookie(...JSON.parse(cookiesStr));
         await page.goto('https://www.tiktok.com/upload?lang=ar', { waitUntil: 'networkidle2', timeout: 120000 });
 
-        console.log(`📤 جاري رفع الفيديو...`);
+        console.log(`📤 جاري رفع الفيديو لـ TikTok...`);
         const fileInput = await page.waitForSelector('input[type="file"]');
         await fileInput.uploadFile(videoPath);
 
@@ -102,7 +110,7 @@ async function uploadToTikTok(videoPath, title) {
 
         await page.click(postBtn);
         await new Promise(r => setTimeout(r, 15000)); 
-        console.log("✅ تم النشر بنجاح!");
+        console.log("✅ تم النشر على TikTok بنجاح!");
         return true;
     } catch (err) {
         console.error("❌ فشل الرفع:", err.message);
@@ -112,17 +120,16 @@ async function uploadToTikTok(videoPath, title) {
     }
 }
 
-// --- 4. المحرك الرئيسي ---
+// --- 4. المحرك الرئيسي (تحميل -> معالجة -> رفع) ---
 (async () => {
     console.log("🚀 بدء تشغيل البوت...");
 
-    // فحص التاريخ
     let history = { posted: [] };
     if (fs.existsSync(CONFIG.historyFile)) {
         try {
             history = JSON.parse(fs.readFileSync(CONFIG.historyFile, 'utf8'));
         } catch (e) {
-            console.log("⚠️ ملف السجل تالف، سيتم إنشاء واحد جديد.");
+            console.log("⚠️ سجل التاريخ تالف، سيتم البدء من جديد.");
         }
     }
 
@@ -130,7 +137,7 @@ async function uploadToTikTok(videoPath, title) {
     const unposted = videos.filter(v => !history.posted.includes(v.id));
 
     if (unposted.length === 0) {
-        console.log("👋 لا يوجد محتوى عربي جديد.");
+        console.log("👋 لا يوجد محتوى جديد غير منشور.");
         return;
     }
 
@@ -141,32 +148,32 @@ async function uploadToTikTok(videoPath, title) {
 
     if (m3u8Url) {
         try {
-            console.log(`📥 المرحلة 1: تحميل أول ${CONFIG.clipDuration} ثانية...`);
-            // التحميل الخام (أسرع وأكثر استقراراً)
-            const downloadCmd = `ffmpeg -user_agent "${CONFIG.userAgent}" -headers "Referer: https://www.dailymotion.com/" -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -i "${m3u8Url}" -t ${CONFIG.clipDuration} -c copy -bsf:a aac_adtstoasc -y "${CONFIG.rawVideo}"`;
+            console.log(`📥 المرحلة 1: تحميل أول 3 دقائق (خام)...`);
+            // التحميل باستخدام الرابط المستخرج وتجاوز الأخطاء
+            const downloadCmd = `ffmpeg -headers "Referer: https://www.dailymotion.com/" -i "${m3u8Url}" -t ${CONFIG.clipDuration} -c copy -y "${CONFIG.rawVideo}"`;
             execSync(downloadCmd, { stdio: 'inherit' });
 
             if (fs.existsSync(CONFIG.rawVideo) && fs.statSync(CONFIG.rawVideo).size > 1000000) {
-                console.log(`🎨 المرحلة 2: معالجة الفيديو (Filters & Speed)...`);
-                // المعالجة المحلية بعد التحميل لضمان عدم حدوث أخطاء سيرفر
-                const processCmd = `ffmpeg -i "${CONFIG.rawVideo}" -vf "setpts=0.95*PTS,scale=iw*1.02:ih*1.02,crop=iw/1.02:ih/1.02,eq=brightness=0.03:contrast=1.05" -c:v libx264 -crf 24 -pix_fmt yuv420p -af "atempo=1.05" -y "${CONFIG.tempVideo}"`;
+                console.log(`🎨 المرحلة 2: معالجة الفيديو (تغيير الأبعاد، سطوع، وسرعة)...`);
+                // الفلاتر المطلوبة مع تسريع طفيف 5%
+                const processCmd = `ffmpeg -i "${CONFIG.rawVideo}" -vf "setpts=0.95*PTS,scale=iw*1.02:ih*1.02,crop=iw/1.02:ih/1.02,eq=brightness=0.03:contrast=1.05" -c:v libx264 -crf 23 -pix_fmt yuv420p -af "atempo=1.05" -y "${CONFIG.tempVideo}"`;
                 execSync(processCmd, { stdio: 'inherit' });
 
                 const success = await uploadToTikTok(CONFIG.tempVideo, selected.title);
                 if (success) {
                     history.posted.push(selected.id);
                     fs.writeFileSync(CONFIG.historyFile, JSON.stringify(history, null, 2));
-                    console.log("💾 تم حفظ الـ ID في السجل.");
+                    console.log("💾 تمت إضافة الفيديو للسجل لمنع التكرار.");
                 }
             } else {
-                console.error("❌ فشل تحميل الملف الخام.");
+                console.error("❌ فشل التحميل: الملف الناتج صغير جداً أو غير موجود.");
             }
         } catch (e) {
-            console.error("⚠️ خطأ في المعالجة:", e.message);
+            console.error("⚠️ خطأ تقني في المعالجة:", e.message);
         }
     }
 
-    // تنظيف الملفات المؤقتة
+    // تنظيف الملفات المؤقتة لتوفير المساحة
     if (fs.existsSync(CONFIG.rawVideo)) fs.unlinkSync(CONFIG.rawVideo);
     if (fs.existsSync(CONFIG.tempVideo)) fs.unlinkSync(CONFIG.tempVideo);
 })();
