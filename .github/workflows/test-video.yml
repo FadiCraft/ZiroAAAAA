@@ -1,15 +1,13 @@
-name: TikTok Auto Uploader
+name: Manual Video Uploader
 
 on:
-  schedule:
-    - cron: '0 */3 * * *' # يعمل كل 3 ساعات
-  workflow_dispatch: # للتشغيل اليدوي
+  workflow_dispatch: # يتيح لك التشغيل يدوياً من صفحة Actions
 
 jobs:
-  run-bot:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
+      - name: Checkout repository
         uses: actions/checkout@v3
 
       - name: Setup Node.js
@@ -17,23 +15,15 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install Google Chrome
+      - name: Install Google Chrome and FFmpeg
         run: |
           sudo apt-get update
-          sudo apt-get install -y google-chrome-stable
+          sudo apt-get install -y google-chrome-stable ffmpeg
 
-      - name: Install Dependencies
+      - name: Install Node Dependencies
         run: npm install
 
-      - name: Run Script
+      - name: Run Bot
         env:
           TIKTOK_COOKIES: ${{ secrets.TIKTOK_COOKIES }}
         run: node index.js
-
-      - name: Commit & Push History
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add history.json
-          git commit -m "Update history [skip ci]" || echo "No changes to commit"
-          git push
