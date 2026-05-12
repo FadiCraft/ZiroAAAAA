@@ -12,13 +12,12 @@ puppeteer.use(StealthPlugin());
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// --- الإعدادات ---
 const CONFIG = {
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     historyFile: path.join(__dirname, "history.json"),
     rawVideo: path.join(__dirname, "raw_video.mp4"),
     finalVideo: path.join(__dirname, "final_video.mp4"),
-    clipDuration: "00:03:00",
+    clipDuration: 180, // 3 دقائق بالثواني
     fixedText: " | شاهد الحلقة كاملة الرابط في البايو 🔗🍿",
     channels: ["Film.Arena", "Chnese-drama", "Drama-Portal", "Neon.History", "drama.box"]
 };
@@ -42,57 +41,57 @@ async function fetchVideos() {
     return allVideos;
 }
 
-// --- 2. تحميل المقطع (تغيير الصيغة لتجنب الـ 404) ---
-async function downloadClip(videoId) {
+// --- 2. تحميل وقص الفيديو (طريقة الـ Direct Stream) ---
+async function downloadAndClip(videoId) {
     try {
-        console.log(`📥 محاولة تحميل مقطع ${videoId} بصيغة mp4 مباشرة...`);
-        const url = `https://www.dailymotion.com/video/${videoId}`;
+        console.log(`🔍 استخراج رابط البث المباشر لـ ${videoId}...`);
         
-        // هنا السر: نطلب صيغة mp4 المباشرة (http) بدلاً من HLS (m3u8) لتجنب الـ Proxy 404
-        await ytdl(url, {
-            output: CONFIG.rawVideo,
-            // نختار أفضل جودة mp4 جاهزة بدلاً من دمج روابط m3u8
-            format: 'best[ext=mp4]/best', 
-            downloadSections: `*00:00:00-${CONFIG.clipDuration}`,
+        // جلب الرابط باستخدام yt-dlp مع منع ffmpeg الداخلي الخاص به
+        const info = await ytdl(`https://www.dailymotion.com/video/${videoId}`, {
+            dumpSingleJson: true,
             noCheckCertificates: true,
-            userAgent: CONFIG.userAgent,
-            addHeader: ['Referer:https://www.dailymotion.com/'],
-            forceOverwrites: true
+            noWarnings: true,
+            preferFreeFormats: true,
+            addHeader: [`User-Agent:${CONFIG.userAgent}`, 'Referer:https://www.dailymotion.com/']
         });
 
-        if (fs.existsSync(CONFIG.rawVideo) && fs.statSync(CONFIG.rawVideo).size > 1000000) {
-            console.log(`✅ تم التحميل بنجاح.`);
-            return true;
-        }
-        return false;
+        const streamUrl = info.url;
+        if (!streamUrl) throw new Error("لم يتم العثور على رابط البث");
+
+        console.log(`📥 جاري التحميل والقص المباشر عبر FFmpeg...`);
+
+        // تشغيل ffmpeg مباشرة مع تمرير الـ Headers لضمان عدم حدوث 404
+        const ffmpegCmd = `ffmpeg -headers "User-Agent: ${CONFIG.userAgent}\r\nReferer: https://www.dailymotion.com/\r\n" -i "${streamUrl}" -t ${CONFIG.clipDuration} -c:v copy -c:a copy -y "${CONFIG.rawVideo}"`;
+        
+        execSync(ffmpegCmd, { stdio: 'inherit' });
+
+        return fs.existsSync(CONFIG.rawVideo) && fs.statSync(CONFIG.rawVideo).size > 1000000;
     } catch (err) {
-        console.error(`❌ فشل التحميل: ${err.message}`);
+        console.error(`❌ فشل في التحميل/القص: ${err.message}`);
         return false;
     }
 }
 
-// --- 3. معالجة الفيديو ---
+// --- 3. معالجة الفيديو (تغيير البصمة) ---
 function processVideo() {
-    console.log(`🎨 معالجة الفيديو وإضافة الفلاتر...`);
+    console.log(`🎨 معالجة الفيديو لإضافة فلاتر التخطي...`);
     try {
         const cmd = `ffmpeg -i "${CONFIG.rawVideo}" -vf "setpts=0.95*PTS,scale=iw*1.02:ih*1.02,crop=iw/1.02:ih/1.02,eq=brightness=0.03:contrast=1.05" -c:v libx264 -crf 23 -pix_fmt yuv420p -af "atempo=1.05" -y "${CONFIG.finalVideo}"`;
         execSync(cmd, { stdio: 'inherit' });
         return fs.existsSync(CONFIG.finalVideo);
     } catch (e) {
+        console.error(`❌ خطأ في المعالجة: ${e.message}`);
         return false;
     }
 }
 
-// --- 4. رفع إلى TikTok ---
+// --- 4. الرفع لـ TikTok ---
 async function uploadToTikTok(videoPath, title) {
     const cookiesStr = process.env.TIKTOK_COOKIES;
     if (!cookiesStr) return false;
     let browser;
     try {
-        browser = await puppeteer.launch({
-            headless: "new",
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
-        });
+        browser = await puppeteer.launch({ headless: "new", args: ['--no-sandbox', '--disable-setuid-sandbox'] });
         const page = await browser.newPage();
         await page.setUserAgent(CONFIG.userAgent);
         await page.setCookie(...JSON.parse(cookiesStr));
@@ -101,14 +100,10 @@ async function uploadToTikTok(videoPath, title) {
         const fileInput = await page.waitForSelector('input[type="file"]');
         await fileInput.uploadFile(videoPath);
 
-        const caption = `${title} ${CONFIG.fixedText} #explore #dramabox`;
+        const caption = `${title} ${CONFIG.fixedText} #explore #dramabox #drama`;
         const editor = '.public-DraftEditor-content';
         await page.waitForSelector(editor);
-        await page.click(editor);
-        await page.keyboard.down('Control');
-        await page.keyboard.press('A');
-        await page.keyboard.up('Control');
-        await page.keyboard.press('Backspace');
+        await page.focus(editor);
         await page.keyboard.type(caption);
 
         const postBtn = 'button[data-e2e="post_video_button"]';
@@ -118,18 +113,20 @@ async function uploadToTikTok(videoPath, title) {
         }, { timeout: 300000 }, postBtn);
 
         await page.click(postBtn);
-        await new Promise(r => setTimeout(r, 15000));
-        console.log(`✅ تم النشر!`);
+        await new Promise(r => setTimeout(r, 20000));
+        console.log(`✅ تم النشر بنجاح!`);
         return true;
     } catch (err) {
+        console.error(`❌ خطأ رفع: ${err.message}`);
         return false;
     } finally {
         if (browser) await browser.close();
     }
 }
 
-// --- 5. التشغيل ---
+// --- 5. التنفيذ الرئيسي ---
 (async () => {
+    console.log("🚀 تشغيل البوت...");
     let history = { posted: [] };
     if (fs.existsSync(CONFIG.historyFile)) {
         try { history = JSON.parse(fs.readFileSync(CONFIG.historyFile, 'utf8')); } catch (e) {}
@@ -137,12 +134,12 @@ async function uploadToTikTok(videoPath, title) {
 
     const videos = await fetchVideos();
     const unposted = videos.filter(v => !history.posted.includes(v.id));
-    if (unposted.length === 0) return;
+    if (unposted.length === 0) return console.log("👋 لا محتوى جديد.");
 
     const selected = unposted[Math.floor(Math.random() * unposted.length)];
     console.log(`🎯 المختار: ${selected.title}`);
-    
-    if (await downloadClip(selected.id)) {
+
+    if (await downloadAndClip(selected.id)) {
         if (processVideo()) {
             if (await uploadToTikTok(CONFIG.finalVideo, selected.title)) {
                 history.posted.push(selected.id);
@@ -151,7 +148,5 @@ async function uploadToTikTok(videoPath, title) {
         }
     }
 
-    [CONFIG.rawVideo, CONFIG.finalVideo].forEach(f => {
-        if (fs.existsSync(f)) fs.unlinkSync(f);
-    });
+    [CONFIG.rawVideo, CONFIG.finalVideo].forEach(f => { if (fs.existsSync(f)) fs.unlinkSync(f); });
 })();
