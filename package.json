@@ -1,9 +1,7 @@
-{
-  "type": "module",
-  "dependencies": {
-    "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "node-fetch": "^3.3.2",
-    "yt-dlp-exec": "^1.0.0"
-  }
+"dependencies": {
+  "puppeteer": "^22.0.0",
+  "puppeteer-extra": "^3.3.6",
+  "puppeteer-extra-plugin-stealth": "^2.11.2",
+  "node-fetch": "^3.3.2",
+  "yt-dlp-exec": "^1.0.1"
 }
