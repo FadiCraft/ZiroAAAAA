@@ -1,51 +1,39 @@
-name: Auto TikTok Publisher
+name: TikTok Auto Uploader
 
 on:
   schedule:
-    - cron: '0 */6 * * *' # يعمل كل 6 ساعات (تدريجي)
-  workflow_dispatch: # تشغيل يدوي للتجربة
+    - cron: '0 */3 * * *' # يعمل كل 3 ساعات
+  workflow_dispatch: # للتشغيل اليدوي
 
 jobs:
-  build:
+  run-bot:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write # ضروري للسماح لـ Github Action بالكتابة في المستودع
     steps:
-      - name: 📥 Checkout Repository
-        uses: actions/checkout@v4
+      - name: Checkout Code
+        uses: actions/checkout@v3
 
-      - name: ⚙️ Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
         with:
           node-version: '20'
 
-      - name: 🎬 Install FFmpeg
+      - name: Install Google Chrome
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y google-chrome-stable
 
-      - name: 📦 Install Dependencies
+      - name: Install Dependencies
         run: npm install
 
-      - name: 🚀 Run Bot
+      - name: Run Script
         env:
           TIKTOK_COOKIES: ${{ secrets.TIKTOK_COOKIES }}
         run: node index.js
 
-      - name: 💾 Commit & Push History
+      - name: Commit & Push History
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          
-          # التحقق من وجود ملف السجل قبل محاولة رفعه
-          if [ -f history.json ]; then
-            git add history.json
-            git commit -m "Update history [skip ci]" || echo "No changes to commit"
-            git push origin main
-          else
-            echo "history.json not found, creating and pushing..."
-            echo '{"posted":[]}' > history.json
-            git add history.json
-            git commit -m "Initial history [skip ci]"
-            git push origin main
-          fi
+          git add history.json
+          git commit -m "Update history [skip ci]" || echo "No changes to commit"
+          git push
