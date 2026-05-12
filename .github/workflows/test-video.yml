@@ -1,42 +1,37 @@
-name: Test Video Download & Process
+name: Auto TikTok Publisher
 
 on:
-  workflow_dispatch: # يسمح لك بتشغيل السكريبت يدوياً بضغطة زر من صفحة Actions
+  schedule:
+    - cron: '0 */6 * * *' # يعمل كل 6 ساعات
+  workflow_dispatch: # تشغيل يدوياً للتجربة
 
 jobs:
-  extract-video:
+  build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: 📥 Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: ⚙️ Setup Node.js
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: 🎬 Install FFmpeg
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
-      - name: 📦 Install NPM Dependencies
+      - name: Install Dependencies
         run: npm install
 
-      - name: 🚀 Run Video Extractor
+      - name: Run Bot
+        env:
+          TIKTOK_COOKIES: ${{ secrets.TIKTOK_COOKIES }}
         run: node index.js
 
-      - name: 📤 Upload Processed Video as Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: tiktok-ready-video
-          path: output.mp4
-          retention-days: 1 # يحتفظ بالفيديو ليوم واحد لتوفير المساحة
-
-      - name: 💾 Upload History File (Optional View)
-        uses: actions/upload-artifact@v4
-        with:
-          name: updated-history
-          path: history.json
-          retention-days: 1
+      - name: Commit History
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add history.json
+          git commit -m "Update history [skip ci]" || echo "No changes"
+          git push
