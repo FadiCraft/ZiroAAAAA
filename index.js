@@ -1,10 +1,11 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { execSync, spawn } from "child_process";
+import { execSync } from "child_process";
 import puppeteer from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import fetch from "node-fetch";
+import ytdl from 'yt-dlp-exec'; // استخدام المكتبة مباشرة
 
 puppeteer.use(StealthPlugin());
 
@@ -51,92 +52,44 @@ async function fetchVideos() {
             console.error(`❌ ${e.message}`); 
         }
     }
-    
     return allVideos;
 }
 
-// --- 2. تحميل المقطع (طريقة مضمونة) ---
+// --- 2. تحميل المقطع (تم استبدال npx بـ library call) ---
 async function downloadClip(videoId) {
-    return new Promise((resolve, reject) => {
-        console.log(`📥 تحميل أول 3 دقائق...`);
-        
+    try {
+        console.log(`📥 تحميل أول 3 دقائق لـ ${videoId}...`);
         const url = `https://www.dailymotion.com/video/${videoId}`;
         
-        // استخدام npx لتشغيل yt-dlp بدون تثبيت
-        const args = [
-            '-y', 'yt-dlp-exec', '--',
-            url,
-            '--output', CONFIG.rawVideo,
-            '--download-sections', `*00:00:00-${CONFIG.clipDuration}`,
-            '--format', 'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]',
-            '--merge-output-format', 'mp4',
-            '--no-check-certificates',
-            '--user-agent', CONFIG.userAgent,
-            '--force-overwrites',
-            '--no-playlist',
-            '--no-warnings'
-        ];
-        
-        console.log(`🔧 جاري التحميل...`);
-        
-        const proc = spawn('npx', args, {
-            stdio: ['pipe', 'pipe', 'pipe']
+        await ytdl(url, {
+            output: CONFIG.rawVideo,
+            downloadSections: `*00:00:00-${CONFIG.clipDuration}`,
+            format: 'bestvideo+bestaudio/best',
+            mergeOutputFormat: 'mp4',
+            noCheckCertificates: true,
+            userAgent: CONFIG.userAgent,
+            forceOverwrites: true,
+            noPlaylist: true,
+            noWarnings: true
         });
-        
-        let output = '';
-        
-        proc.stdout.on('data', (data) => {
-            output += data.toString();
-            process.stdout.write('.');
-        });
-        
-        proc.stderr.on('data', (data) => {
-            output += data.toString();
-        });
-        
-        proc.on('close', (code) => {
-            console.log('');
-            if (code === 0 && fs.existsSync(CONFIG.rawVideo)) {
-                const size = fs.statSync(CONFIG.rawVideo).size;
-                console.log(`✅ تم التحميل (${(size / 1024 / 1024).toFixed(2)} MB)`);
-                resolve(true);
-            } else {
-                console.error(`❌ فشل التحميل (كود ${code})`);
-                console.error(output.slice(-500));
-                resolve(false);
-            }
-        });
-        
-        proc.on('error', (err) => {
-            console.error(`❌ خطأ: ${err.message}`);
-            resolve(false);
-        });
-        
-        setTimeout(() => {
-            proc.kill();
-            resolve(false);
-        }, 300000);
-    });
+
+        if (fs.existsSync(CONFIG.rawVideo) && fs.statSync(CONFIG.rawVideo).size > 1000000) {
+            const size = fs.statSync(CONFIG.rawVideo).size;
+            console.log(`✅ تم التحميل (${(size / 1024 / 1024).toFixed(2)} MB)`);
+            return true;
+        }
+        return false;
+    } catch (err) {
+        console.error(`❌ فشل التحميل: ${err.message}`);
+        return false;
+    }
 }
 
 // --- 3. معالجة الفيديو ---
 function processVideo() {
     console.log(`🎨 إضافة تأثيرات...`);
-    
     try {
-        const cmd = [
-            'ffmpeg',
-            '-i', `"${CONFIG.rawVideo}"`,
-            '-t', '180',
-            '-vf', 'setpts=0.95*PTS,eq=brightness=0.03:contrast=1.05',
-            '-c:v', 'libx264',
-            '-crf', '23',
-            '-pix_fmt', 'yuv420p',
-            '-af', 'atempo=1.05',
-            '-y',
-            `"${CONFIG.finalVideo}"`
-        ].join(' ');
-        
+        const cmd = `ffmpeg -i "${CONFIG.rawVideo}" -vf "setpts=0.95*PTS,scale=iw*1.02:ih*1.02,crop=iw/1.02:ih/1.02,eq=brightness=0.03:contrast=1.05" -c:v libx264 -crf 23 -pix_fmt yuv420p -af "atempo=1.05" -y "${CONFIG.finalVideo}"`;
         execSync(cmd, { stdio: 'inherit', timeout: 300000 });
         
         if (fs.existsSync(CONFIG.finalVideo)) {
@@ -145,7 +98,7 @@ function processVideo() {
         }
         return false;
     } catch (e) {
-        console.error(`❌ ${e.message}`);
+        console.error(`❌ خطأ في معالجة FFmpeg: ${e.message}`);
         return false;
     }
 }
@@ -167,7 +120,6 @@ async function uploadToTikTok(videoPath, title) {
         
         const page = await browser.newPage();
         await page.setUserAgent(CONFIG.userAgent);
-        
         const cookies = JSON.parse(cookiesStr);
         await page.setCookie(...cookies);
         
@@ -209,7 +161,7 @@ async function uploadToTikTok(videoPath, title) {
         return true;
         
     } catch (err) {
-        console.error(`❌ ${err.message}`);
+        console.error(`❌ خطأ أثناء الرفع: ${err.message}`);
         return false;
     } finally {
         if (browser) await browser.close();
@@ -228,40 +180,40 @@ async function uploadToTikTok(videoPath, title) {
     }
 
     const videos = await fetchVideos();
-    console.log(`📊 المجموع: ${videos.length}`);
+    console.log(`\n📊 المجموع: ${videos.length}`);
     
     const unposted = videos.filter(v => !history.posted.includes(v.id));
     console.log(`🆕 الجديد: ${unposted.length}\n`);
     
     if (unposted.length === 0) {
-        console.log("👋 لا جديد.");
+        console.log("👋 لا يوجد فيديوهات جديدة للنشر.");
         return;
     }
 
     const selected = unposted[Math.floor(Math.random() * unposted.length)];
-    console.log(`🎯 "${selected.title}"\n`);
+    console.log(`🎯 الفيديو المختار: "${selected.title}"\n`);
     
-    // تحميل
+    // 1. تحميل
     const downloaded = await downloadClip(selected.id);
     if (!downloaded) return;
     
-    // معالجة
+    // 2. معالجة
     const processed = processVideo();
     if (!processed) return;
     
-    // رفع
+    // 3. رفع
     const success = await uploadToTikTok(CONFIG.finalVideo, selected.title);
     
     if (success) {
         history.posted.push(selected.id);
         fs.writeFileSync(CONFIG.historyFile, JSON.stringify(history, null, 2));
-        console.log(`💾 تم الحفظ`);
+        console.log(`💾 تم حفظ الفيديو في السجل.`);
     }
     
-    // تنظيف
+    // تنظيف الملفات
     [CONFIG.rawVideo, CONFIG.finalVideo].forEach(f => {
         if (fs.existsSync(f)) fs.unlinkSync(f);
     });
     
-    console.log(`\n✅ انتهى`);
+    console.log(`\n✅ انتهت العملية بنجاح.`);
 })();
