@@ -1,0 +1,42 @@
+name: Test Video Download & Process
+
+on:
+  workflow_dispatch: # يسمح لك بتشغيل السكريبت يدوياً بضغطة زر من صفحة Actions
+
+jobs:
+  extract-video:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: ⚙️ Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 🎬 Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: 📦 Install NPM Dependencies
+        run: npm install
+
+      - name: 🚀 Run Video Extractor
+        run: node index.js
+
+      - name: 📤 Upload Processed Video as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tiktok-ready-video
+          path: output.mp4
+          retention-days: 1 # يحتفظ بالفيديو ليوم واحد لتوفير المساحة
+
+      - name: 💾 Upload History File (Optional View)
+        uses: actions/upload-artifact@v4
+        with:
+          name: updated-history
+          path: history.json
+          retention-days: 1
