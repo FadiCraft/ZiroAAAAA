@@ -12,7 +12,7 @@ const __dirname = path.dirname(__filename);
 
 // ==========================================
 // الإعدادات المباشرة
-const DIRECT_M3U8_URL = "https://cdndirector.dailymotion.com/cdn/manifest/video/xa1abpa.m3u8?sec=FvfvbV7Z0_Vl_VNAf60C1K8PVYZ9uhm2eDiJ9rYUGNhBDbkcUTyzCHvUTHLBz7tP_aJ8xyREKb4_14DhIK7eEc716MmG_OL5oiPmJ2G0i1LUM9VsJL0KGlDl6nNz2Ssu&dmTs=127121&dmV1st=1fa328e4-00eb-5fa4-aa73-5db74587e0a8"; 
+const DIRECT_M3U8_URL = "https://box-1103-o.vmeas.cloud/hls/,xqx2ocxpybokjiqbteic5m2e4bsv4sz5chhkiofn5eza6oxddcd4dt2rgw2a,.urlset/master.m3u8"; 
 
 const VIDEO_TITLE = "مقطع جديد من المسلسل"; // يمكنك تغيير العنوان هنا
 // ==========================================
