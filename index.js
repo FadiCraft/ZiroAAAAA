@@ -18,12 +18,12 @@ const CONFIG = {
     historyFile: path.join(__dirname, "history.json"),
     rawVideo: path.join(__dirname, "raw_video.mp4"),
     tempVideo: path.join(__dirname, "final_video.mp4"),
-    clipDuration: 180, // 3 دقائق
+    clipDuration: 180, // 3 دقائق (180 ثانية)
     fixedText: " | شاهد الحلقة كاملة الرابط في البايو 🔗🍿",
     channels: ["Film.Arena", "Chnese-drama", "Drama-Portal", "Neon.History", "drama.box"]
 };
 
-// --- 1. دالة جلب رابط الفيديو باستخدام المحرك الذكي (yt-dlp) ---
+// --- 1. دالة جلب رابط الفيديو باستخدام المحرك الذكي لتجاوز الـ 404 ---
 async function getM3U8Url(videoId) {
     try {
         console.log(`🔍 جاري استخراج الرابط المباشر للفيديو ${videoId} عبر yt-dlp...`);
@@ -37,7 +37,7 @@ async function getM3U8Url(videoId) {
             ],
         });
         
-        return output.url; // الرابط المستخرج يكون جاهزاً ومصرحاً للتحميل
+        return output.url; 
     } catch (e) {
         console.error(`❌ فشل استخراج الرابط: ${e.message}`);
         return "";
@@ -72,7 +72,7 @@ async function fetchVideos() {
 async function uploadToTikTok(videoPath, title) {
     const cookiesStr = process.env.TIKTOK_COOKIES;
     if (!cookiesStr) {
-        console.error("❌ Cookies are missing!");
+        console.error("❌ Cookies are missing in environment variables!");
         return false;
     }
 
@@ -120,7 +120,7 @@ async function uploadToTikTok(videoPath, title) {
     }
 }
 
-// --- 4. المحرك الرئيسي (تحميل -> معالجة -> رفع) ---
+// --- 4. المحرك الرئيسي (تحميل -> معالجة محلياً -> رفع) ---
 (async () => {
     console.log("🚀 بدء تشغيل البوت...");
 
@@ -148,14 +148,13 @@ async function uploadToTikTok(videoPath, title) {
 
     if (m3u8Url) {
         try {
-            console.log(`📥 المرحلة 1: تحميل أول 3 دقائق (خام)...`);
-            // التحميل باستخدام الرابط المستخرج وتجاوز الأخطاء
+            console.log(`📥 المرحلة 1: تحميل أول 3 دقائق (نسخ خام)...`);
             const downloadCmd = `ffmpeg -headers "Referer: https://www.dailymotion.com/" -i "${m3u8Url}" -t ${CONFIG.clipDuration} -c copy -y "${CONFIG.rawVideo}"`;
             execSync(downloadCmd, { stdio: 'inherit' });
 
             if (fs.existsSync(CONFIG.rawVideo) && fs.statSync(CONFIG.rawVideo).size > 1000000) {
-                console.log(`🎨 المرحلة 2: معالجة الفيديو (تغيير الأبعاد، سطوع، وسرعة)...`);
-                // الفلاتر المطلوبة مع تسريع طفيف 5%
+                console.log(`🎨 المرحلة 2: تطبيق الفلاتر والمعالجة محلياً...`);
+                // الفلاتر: تغيير الحجم + سطوع + تسريع 5%
                 const processCmd = `ffmpeg -i "${CONFIG.rawVideo}" -vf "setpts=0.95*PTS,scale=iw*1.02:ih*1.02,crop=iw/1.02:ih/1.02,eq=brightness=0.03:contrast=1.05" -c:v libx264 -crf 23 -pix_fmt yuv420p -af "atempo=1.05" -y "${CONFIG.tempVideo}"`;
                 execSync(processCmd, { stdio: 'inherit' });
 
@@ -163,17 +162,17 @@ async function uploadToTikTok(videoPath, title) {
                 if (success) {
                     history.posted.push(selected.id);
                     fs.writeFileSync(CONFIG.historyFile, JSON.stringify(history, null, 2));
-                    console.log("💾 تمت إضافة الفيديو للسجل لمنع التكرار.");
+                    console.log("💾 تم التحديث بنجاح.");
                 }
             } else {
-                console.error("❌ فشل التحميل: الملف الناتج صغير جداً أو غير موجود.");
+                console.error("❌ فشل التحميل: الملف الناتج غير صالح.");
             }
         } catch (e) {
-            console.error("⚠️ خطأ تقني في المعالجة:", e.message);
+            console.error("⚠️ خطأ في المعالجة:", e.message);
         }
     }
 
-    // تنظيف الملفات المؤقتة لتوفير المساحة
+    // تنظيف
     if (fs.existsSync(CONFIG.rawVideo)) fs.unlinkSync(CONFIG.rawVideo);
     if (fs.existsSync(CONFIG.tempVideo)) fs.unlinkSync(CONFIG.tempVideo);
 })();
