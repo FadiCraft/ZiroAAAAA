@@ -11,29 +11,31 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // ==========================================
-// 1. ضع رابط الـ m3u8 المباشر هنا:
+// الإعدادات المباشرة
 const DIRECT_M3U8_URL = "https://cdndirector.dailymotion.com/cdn/manifest/video/xa1abpa.m3u8?sec=FvfvbV7Z0_Vl_VNAf60C1K8PVYZ9uhm2eDiJ9rYUGNhBDbkcUTyzCHvUTHLBz7tP_aJ8xyREKb4_14DhIK7eEc716MmG_OL5oiPmJ2G0i1LUM9VsJL0KGlDl6nNz2Ssu&dmTs=127121&dmV1st=1fa328e4-00eb-5fa4-aa73-5db74587e0a8"; 
 
-// 2. ضع عنوان الفيديو للنشر:
-const VIDEO_TITLE = "عنوان الفيديو هنا";
+const VIDEO_TITLE = "مقطع جديد من المسلسل"; // يمكنك تغيير العنوان هنا
 // ==========================================
 
 const CONFIG = {
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     rawVideo: path.join(__dirname, "raw_video.mp4"),
     finalVideo: path.join(__dirname, "final_video.mp4"),
-    clipDuration: 180, // مدة المقطع (3 دقائق)
+    clipDuration: 180, // 3 دقائق
     chromePath: '/usr/bin/google-chrome'
 };
 
 async function uploadToTikTok(videoPath, title) {
     const cookiesStr = process.env.TIKTOK_COOKIES;
-    if (!cookiesStr) return console.error("❌ Cookies missing!"), false;
+    if (!cookiesStr) {
+        console.error("❌ Cookies missing in Secrets!");
+        return false;
+    }
 
     const browser = await puppeteer.launch({ 
         headless: "new", 
         executablePath: CONFIG.chromePath,
-        args: ['--no-sandbox', '--disable-setuid-sandbox'] 
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] 
     });
 
     try {
@@ -41,12 +43,12 @@ async function uploadToTikTok(videoPath, title) {
         await page.setUserAgent(CONFIG.userAgent);
         await page.setCookie(...JSON.parse(cookiesStr));
         
-        console.log("📤 جاري فتح صفحة الرفع...");
+        console.log("📤 جاري فتح صفحة الرفع على تيك توك...");
         await page.goto('https://www.tiktok.com/upload?lang=ar', { waitUntil: 'networkidle2', timeout: 120000 });
 
         const fileInput = await page.waitForSelector('input[type="file"]');
         await fileInput.uploadFile(videoPath);
-        console.log("⏳ جاري الرفع...");
+        console.log("⏳ جاري الرفع ومعالجة العنوان...");
 
         const caption = `${title} | شاهد الحلقة كاملة الرابط في البايو 🔗 #explore #drama`;
         const editor = '.public-DraftEditor-content';
@@ -61,11 +63,13 @@ async function uploadToTikTok(videoPath, title) {
         }, { timeout: 300000 }, postBtn);
 
         await page.click(postBtn);
-        await new Promise(r => setTimeout(r, 20000));
-        console.log("✅ تم النشر!");
+        console.log("⏳ تم الضغط على نشر، بانتظار التأكيد النهائي...");
+        await new Promise(r => setTimeout(r, 25000));
+        console.log("✅ تمت عملية النشر بنجاح!");
         return true;
     } catch (e) {
-        console.error(`❌ فشل الرفع: ${e.message}`);
+        console.error(`❌ فشل أثناء الرفع: ${e.message}`);
+        return false;
     } finally {
         await browser.close();
     }
@@ -73,24 +77,29 @@ async function uploadToTikTok(videoPath, title) {
 
 (async () => {
     try {
-        // الخطوة 1: التحميل والقص المباشر
-        console.log("📥 جاري تحميل أول 3 دقائق من الرابط المباشر...");
-        // أحياناً الـ m3u8 يحتاج Referer ليعمل، أضفناه للاحتياط
+        console.log("🎬 بدء العملية المباشرة...");
+
+        // 1. التحميل والقص المباشر
+        console.log("📥 جاري تحميل أول 3 دقائق باستخدام FFmpeg...");
         const ffmpegCmd = `ffmpeg -headers "User-Agent: ${CONFIG.userAgent}\r\nReferer: https://www.dailymotion.com/\r\n" -i "${DIRECT_M3U8_URL}" -t ${CONFIG.clipDuration} -c copy -y "${CONFIG.rawVideo}"`;
         execSync(ffmpegCmd, { stdio: 'inherit' });
 
-        // الخطوة 2: المعالجة لتغيير البصمة (ضروري جداً لتجنب حظر تيك توك)
-        console.log("🎨 معالجة الفيديو وإضافة فلاتر التخطي...");
+        // 2. المعالجة لتغيير بصمة الفيديو
+        console.log("🎨 إضافة فلاتر التخطي والمعالجة...");
         const processCmd = `ffmpeg -i "${CONFIG.rawVideo}" -vf "setpts=0.95*PTS,scale=iw*1.02:ih*1.02,crop=iw/1.02:ih/1.02,eq=brightness=0.03:contrast=1.05" -c:v libx264 -crf 23 -pix_fmt yuv420p -af "atempo=1.05" -y "${CONFIG.finalVideo}"`;
         execSync(processCmd, { stdio: 'inherit' });
 
-        // الخطوة 3: الرفع
-        await uploadToTikTok(CONFIG.finalVideo, VIDEO_TITLE);
+        // 3. الرفع
+        if (fs.existsSync(CONFIG.finalVideo)) {
+            await uploadToTikTok(CONFIG.finalVideo, VIDEO_TITLE);
+        }
 
     } catch (e) {
-        console.error(`❌ خطأ: ${e.message}`);
+        console.error(`❌ خطأ تقني: ${e.message}`);
     } finally {
+        // تنظيف الملفات
         if (fs.existsSync(CONFIG.rawVideo)) fs.unlinkSync(CONFIG.rawVideo);
         if (fs.existsSync(CONFIG.finalVideo)) fs.unlinkSync(CONFIG.finalVideo);
+        console.log("🧹 تم تنظيف الملفات المؤقتة.");
     }
 })();
