@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { execSync } from "child_process";
+import { execSync, spawn } from "child_process";
 import puppeteer from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import fetch from "node-fetch";
@@ -22,12 +22,11 @@ const CONFIG = {
     channels: ["Film.Arena", "Chnese-drama", "Drama-Portal", "Neon.History", "drama.box"]
 };
 
-// --- 1. الحصول على رابط m3u8 مباشر (طازج) ---
+// --- 1. الحصول على رابط m3u8 مباشر ---
 async function getFreshM3U8(videoId) {
     console.log(`🔗 جلب رابط m3u8 مباشر للفيديو: ${videoId}...`);
     
     try {
-        // استخدام API metadata للحصول على رابط جديد
         const response = await fetch(
             `https://www.dailymotion.com/player/metadata/video/${videoId}`,
             {
@@ -41,25 +40,22 @@ async function getFreshM3U8(videoId) {
         
         const data = await response.json();
         
-        // محاولة الحصول على أفضل جودة متاحة
-        const qualities = data.qualities;
-        if (!qualities) {
+        if (!data.qualities) {
             console.error("❌ لا توجد روابط جودة متاحة");
             return null;
         }
         
-        // تجربة auto أولاً، ثم 1080، ثم 720، ثم 480
+        // تجربة الجودات بالترتيب
         const qualityOrder = ['auto', '1080', '720', '480', '380', '240', '144'];
         
         for (const quality of qualityOrder) {
-            if (qualities[quality] && qualities[quality].length > 0) {
-                const m3u8Url = qualities[quality][0].url;
+            if (data.qualities[quality] && data.qualities[quality].length > 0) {
+                const m3u8Url = data.qualities[quality][0].url;
                 console.log(`✅ تم العثور على رابط m3u8 بجودة ${quality}`);
                 return m3u8Url;
             }
         }
         
-        console.error("❌ لم يتم العثور على أي رابط m3u8 مناسب");
         return null;
         
     } catch (error) {
@@ -68,7 +64,7 @@ async function getFreshM3U8(videoId) {
     }
 }
 
-// --- 2. جلب قائمة الفيديوهات من القنوات ---
+// --- 2. جلب قائمة الفيديوهات ---
 async function fetchVideos() {
     let allVideos = [];
     const arabicRegex = /[\u0600-\u06FF]/;
@@ -83,21 +79,16 @@ async function fetchVideos() {
                 }
             );
             
-            if (!res.ok) {
-                console.error(`❌ فشل الاتصال بقناة ${channel}: ${res.status}`);
-                continue;
-            }
+            if (!res.ok) continue;
             
             const data = await res.json();
             
             if (data.list && data.list.length > 0) {
-                // تصفية الفيديوهات العربية فقط والتي مدتها كافية (أكثر من 3 دقائق)
                 data.list.forEach(v => {
                     if (arabicRegex.test(v.title) && v.duration >= CONFIG.clipDuration) {
                         allVideos.push(v);
                     }
                 });
-                
                 console.log(`   ✅ وجد ${data.list.length} فيديو، منها ${data.list.filter(v => arabicRegex.test(v.title)).length} عربي`);
             }
         } catch (e) { 
@@ -108,75 +99,105 @@ async function fetchVideos() {
     return allVideos;
 }
 
-// --- 3. تحميل المقطع باستخدام ffmpeg مباشرة ---
+// --- 3. تحميل المقطع باستخدام ffmpeg (الطريقة الصحيحة) ---
 async function downloadClip(m3u8Url, outputPath, duration) {
     return new Promise((resolve, reject) => {
         console.log(`📥 بدء تحميل ${duration} ثانية من الفيديو...`);
         
-        try {
-            // استخدام ffmpeg لتحميل المقطع مباشرة من رابط m3u8
-            // نضيف headers للتأكد من السماح بالتحميل
-            const command = [
-                'ffmpeg',
-                '-headers', `User-Agent: ${CONFIG.userAgent}\r\nReferer: https://www.dailymotion.com/\r\n`,
-                '-i', `"${m3u8Url}"`,
-                '-t', String(duration),
-                '-c', 'copy',
-                '-bsf:a', 'aac_adtstoasc',
-                '-y',
-                `"${outputPath}"`
-            ].join(' ');
-            
-            console.log(`🔧 تنفيذ: ffmpeg -i [m3u8_url] -t ${duration} ...`);
-            
-            execSync(command, { 
-                stdio: 'inherit',
-                timeout: 300000 // 5 دقائق كحد أقصى
-            });
-            
-            // التحقق من نجاح التحميل
-            if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000000) {
-                console.log(`✅ تم التحميل بنجاح (${(fs.statSync(outputPath).size / 1024 / 1024).toFixed(2)} MB)`);
-                resolve(true);
-            } else {
-                reject(new Error("الملف المحمل صغير جداً أو غير موجود"));
+        // استخدام spawn بدلاً من execSync لتجنب مشاكل escaping
+        const args = [
+            '-user_agent', CONFIG.userAgent,
+            '-headers', `Referer: https://www.dailymotion.com/`,
+            '-i', m3u8Url,
+            '-t', String(duration),
+            '-c', 'copy',
+            '-bsf:a', 'aac_adtstoasc',
+            '-movflags', '+faststart',
+            '-y',
+            outputPath
+        ];
+        
+        console.log(`🔧 تشغيل ffmpeg...`);
+        
+        const ffmpeg = spawn('ffmpeg', args, {
+            stdio: ['pipe', 'pipe', 'pipe']
+        });
+        
+        let stderr = '';
+        
+        ffmpeg.stderr.on('data', (data) => {
+            stderr += data.toString();
+            // طباعة التقدم إذا كان هناك
+            if (data.toString().includes('time=')) {
+                process.stdout.write(`\r⏳ ${data.toString().match(/time=(\S+)/)?.[0] || ''}`);
             }
-            
-        } catch (error) {
-            reject(error);
-        }
+        });
+        
+        ffmpeg.on('close', (code) => {
+            console.log(''); // سطر جديد
+            if (code === 0) {
+                if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 500000) {
+                    console.log(`✅ تم التحميل بنجاح (${(fs.statSync(outputPath).size / 1024 / 1024).toFixed(2)} MB)`);
+                    resolve(true);
+                } else {
+                    reject(new Error("الملف الناتج صغير جداً"));
+                }
+            } else {
+                console.error(`❌ فشل ffmpeg (كود ${code}):`);
+                console.error(stderr.slice(-500)); // آخر 500 حرف من الخطأ
+                reject(new Error(`ffmpeg exited with code ${code}`));
+            }
+        });
+        
+        ffmpeg.on('error', (err) => {
+            reject(new Error(`فشل تشغيل ffmpeg: ${err.message}`));
+        });
+        
+        // إضافة timeout
+        setTimeout(() => {
+            ffmpeg.kill();
+            reject(new Error('انتهت مهلة التحميل (5 دقائق)'));
+        }, 300000);
     });
 }
 
-// --- 4. معالجة الفيديو (فلاتر + تحسينات) ---
+// --- 4. معالجة الفيديو ---
 async function processVideo(inputPath, outputPath) {
     return new Promise((resolve, reject) => {
         console.log(`🎨 تطبيق الفلاتر والتحسينات...`);
         
-        try {
-            const command = [
-                'ffmpeg',
-                '-i', `"${inputPath}"`,
-                '-vf', '"setpts=0.95*PTS,scale=iw*1.02:ih*1.02,crop=iw/1.02:ih/1.02,eq=brightness=0.03:contrast=1.05"',
-                '-c:v', 'libx264',
-                '-crf', '23',
-                '-pix_fmt', 'yuv420p',
-                '-af', '"atempo=1.05"',
-                '-y',
-                `"${outputPath}"`
-            ].join(' ');
-            
-            execSync(command, { 
-                stdio: 'inherit',
-                timeout: 300000
-            });
-            
-            console.log(`✅ تمت المعالجة بنجاح`);
-            resolve(true);
-            
-        } catch (error) {
-            reject(error);
-        }
+        const args = [
+            '-i', inputPath,
+            '-vf', 'setpts=0.95*PTS,scale=iw*1.02:ih*1.02,crop=iw/1.02:ih/1.02,eq=brightness=0.03:contrast=1.05',
+            '-c:v', 'libx264',
+            '-crf', '23',
+            '-pix_fmt', 'yuv420p',
+            '-af', 'atempo=1.05',
+            '-y',
+            outputPath
+        ];
+        
+        const ffmpeg = spawn('ffmpeg', args);
+        
+        ffmpeg.stderr.on('data', (data) => {
+            if (data.toString().includes('time=')) {
+                process.stdout.write(`\r⏳ ${data.toString().match(/time=(\S+)/)?.[0] || ''}`);
+            }
+        });
+        
+        ffmpeg.on('close', (code) => {
+            console.log('');
+            if (code === 0) {
+                console.log(`✅ تمت المعالجة بنجاح`);
+                resolve(true);
+            } else {
+                reject(new Error(`فشلت المعالجة (كود ${code})`));
+            }
+        });
+        
+        ffmpeg.on('error', (err) => {
+            reject(err);
+        });
     });
 }
 
@@ -190,21 +211,20 @@ async function uploadToTikTok(videoPath, title) {
 
     console.log(`🌐 بدء تشغيل المتصفح للرفع...`);
     
-    const browser = await puppeteer.launch({
-        headless: "new",
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--disable-gpu'
-        ]
-    });
-    
-    const page = await browser.newPage();
-    await page.setUserAgent(CONFIG.userAgent);
-    
+    let browser;
     try {
+        browser = await puppeteer.launch({
+            headless: "new",
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage'
+            ]
+        });
+        
+        const page = await browser.newPage();
+        await page.setUserAgent(CONFIG.userAgent);
+        
         // تعيين الكوكيز
         const cookies = JSON.parse(cookiesStr);
         await page.setCookie(...cookies);
@@ -216,12 +236,16 @@ async function uploadToTikTok(videoPath, title) {
         });
 
         // رفع الفيديو
-        console.log(`📤 جاري رفع "${path.basename(videoPath)}"...`);
+        console.log(`📤 جاري رفع الفيديو...`);
         const fileInput = await page.waitForSelector('input[type="file"]', { timeout: 30000 });
         await fileInput.uploadFile(videoPath);
 
         // كتابة الوصف
-        const hashtags = title.split(' ').slice(0, 3).map(w => `#${w.replace(/[^a-zA-Z\u0600-\u06FF]/g, '')}`).join(' ');
+        const hashtags = title.split(' ').slice(0, 3)
+            .map(w => `#${w.replace(/[^a-zA-Z\u0600-\u06FF]/g, '')}`)
+            .filter(h => h.length > 1)
+            .join(' ');
+        
         const caption = `${title} ${CONFIG.fixedText} ${hashtags} #dramabox #explore`;
         
         console.log(`📝 كتابة الوصف...`);
@@ -258,16 +282,9 @@ async function uploadToTikTok(videoPath, title) {
         
     } catch (err) {
         console.error(`❌ فشل الرفع:`, err.message);
-        
-        // التقاط screenshot للتشخيص
-        try {
-            await page.screenshot({ path: path.join(__dirname, 'error_screenshot.png') });
-            console.log(`📸 تم حفظ screenshot للخطأ`);
-        } catch (e) {}
-        
         return false;
     } finally {
-        await browser.close();
+        if (browser) await browser.close();
     }
 }
 
@@ -313,7 +330,7 @@ async function uploadToTikTok(videoPath, title) {
             return;
         }
         
-        // الخطوة 2: تحميل أول 3 دقائق مباشرة
+        // الخطوة 2: تحميل أول 3 دقائق
         console.log(`\n📥 تحميل أول 3 دقائق...`);
         await downloadClip(m3u8Url, CONFIG.rawVideo, CONFIG.clipDuration);
         
@@ -336,14 +353,11 @@ async function uploadToTikTok(videoPath, title) {
         console.error(`\n⚠️ خطأ تقني:`, e.message);
     } finally {
         // تنظيف
-        if (fs.existsSync(CONFIG.rawVideo)) {
-            fs.unlinkSync(CONFIG.rawVideo);
-            console.log(`🧹 تم حذف الملف الخام`);
-        }
-        if (fs.existsSync(CONFIG.tempVideo)) {
-            fs.unlinkSync(CONFIG.tempVideo);
-            console.log(`🧹 تم حذف الملف المعالج`);
-        }
+        try {
+            if (fs.existsSync(CONFIG.rawVideo)) fs.unlinkSync(CONFIG.rawVideo);
+            if (fs.existsSync(CONFIG.tempVideo)) fs.unlinkSync(CONFIG.tempVideo);
+            console.log(`🧹 تم تنظيف الملفات المؤقتة`);
+        } catch (e) {}
     }
     
     console.log(`\n✅ اكتمل التشغيل`);
