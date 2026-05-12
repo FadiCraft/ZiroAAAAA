@@ -7,8 +7,9 @@ const fs = require('fs');
 const path = require('path');
 
 // البيانات التي حصلت عليها من موقع تلجرام (يفضل وضعها في ملف .env)
-const apiId = parseInt(process.env.API_ID); 
-const apiHash = process.env.API_HASH;
+const apiId = "35588992"; 
+const apiHash = "8723ed5c399d611fedde1b5b39e5edbe"
+;
 const stringSession = new StringSession(""); // اتركه فارغاً في أول مرة تشغيل
 
 (async () => {
