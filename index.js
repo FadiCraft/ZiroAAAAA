@@ -2,111 +2,133 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { execSync } from "child_process";
+import puppeteer from "puppeteer-extra";
+import StealthPlugin from "puppeteer-extra-plugin-stealth";
+
+puppeteer.use(StealthPlugin());
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ==================== الإعدادات ====================
+// --- الإعدادات ---
 const CONFIG = {
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     historyFile: path.join(__dirname, "history.json"),
-    outputVideo: path.join(__dirname, "output.mp4"),
-    clipDuration: 150 // مدة اللقطة بالثواني (دقيقتين ونصف)
+    tempVideo: path.join(__dirname, "temp_video.mp4"),
+    clipDuration: 150, // 2.5 دقيقة
+    fixedText: " | شاهد الحلقة كاملة الرابط في البايو 🔗🍿",
+    channels: ["Film.Arena", "Chnese-drama", "Drama-Portal", "Neon.History", "drama.box"]
 };
 
-const CHANNELS = [
-    "Film.Arena",
-    "Chnese-drama",
-    "Drama-Portal",
-    "Neon.History",
-    "drama.box"
-];
+// --- وظائف Dailymotion ---
+async function getM3U8Url(videoId) {
+    try {
+        const response = await fetch(`https://www.dailymotion.com/player/metadata/video/${videoId}`, {
+            headers: { 'User-Agent': CONFIG.userAgent }
+        });
+        const data = await response.json();
+        return data.qualities?.auto?.[0]?.url || "";
+    } catch { return ""; }
+}
 
-// ==================== دوال المساعدة ====================
-class DailymotionClient {
-    constructor() {
-        this.baseUrl = "https://api.dailymotion.com";
-    }
-
-    async getM3U8Url(videoId) {
+async function fetchVideos() {
+    let allVideos = [];
+    const arabicRegex = /[\u0600-\u06FF]/;
+    
+    for (const channel of CONFIG.channels) {
+        console.log(`📡 فحص قناة: ${channel}...`);
         try {
-            const response = await fetch(`https://www.dailymotion.com/player/metadata/video/${videoId}`, {
-                headers: { 'User-Agent': CONFIG.userAgent }
-            });
-            const data = await response.json();
-            return data.qualities?.auto?.[0]?.url || "";
-        } catch { return ""; }
+            const res = await fetch(`https://api.dailymotion.com/user/${channel}/videos?fields=id,title&limit=20&sort=recent`);
+            const data = await res.json();
+            if (data.list) {
+                data.list.forEach(v => {
+                    if (arabicRegex.test(v.title)) allVideos.push(v);
+                });
+            }
+        } catch (e) { console.error(`❌ خطأ في فحص ${channel}`); }
     }
+    return allVideos;
+}
 
-    async getUserVideos(username) {
-        const url = `${this.baseUrl}/user/${username}/videos?fields=id,title,created_time&limit=50&sort=recent`;
-        const response = await fetch(url, { headers: { 'User-Agent': CONFIG.userAgent } });
-        return await response.json();
+// --- وظيفة الرفع لـ TikTok ---
+async function uploadToTikTok(videoPath, title) {
+    const cookiesStr = process.env.TIKTOK_COOKIES;
+    if (!cookiesStr) throw new Error("Cookies missing!");
+
+    const browser = await puppeteer.launch({
+        headless: "new",
+        args: ['--no-sandbox', '--disable-setuid-sandbox']
+    });
+    const page = await browser.newPage();
+    await page.setUserAgent(CONFIG.userAgent);
+    
+    try {
+        await page.setCookie(...JSON.parse(cookiesStr));
+        await page.goto('https://www.tiktok.com/upload?lang=ar', { waitUntil: 'networkidle2', timeout: 120000 });
+
+        console.log(`📤 جاري رفع الفيديو...`);
+        const fileInput = await page.waitForSelector('input[type="file"]');
+        await fileInput.uploadFile(videoPath);
+
+        const caption = `${title} ${CONFIG.fixedText} #explore #dramabox #foryou`;
+        const editorSelector = '.public-DraftEditor-content';
+        await page.waitForSelector(editorSelector);
+        await page.focus(editorSelector);
+        
+        // مسح النص القديم وكتابة الجديد
+        await page.keyboard.down('Control');
+        await page.keyboard.press('A');
+        await page.keyboard.up('Control');
+        await page.keyboard.press('Backspace');
+        await page.keyboard.type(caption, { delay: 50 });
+
+        const postBtn = 'button[data-e2e="post_video_button"]';
+        await page.waitForFunction(sel => {
+            const btn = document.querySelector(sel);
+            return btn && btn.getAttribute('data-disabled') === 'false';
+        }, { timeout: 240000 }, postBtn);
+
+        await page.click(postBtn);
+        await new Promise(r => setTimeout(r, 10000)); // انتظار النشر
+        console.log("✅ تم النشر على تيك توك!");
+        return true;
+    } catch (err) {
+        console.error("❌ فشل الرفع:", err.message);
+        return false;
+    } finally {
+        await browser.close();
     }
 }
 
-// ==================== التشغيل ====================
+// --- المحرك الرئيسي ---
 (async () => {
-    console.log("🚀 بدء التشغيل التجريبي لسحب لقطة فيديو...");
+    let history = fs.existsSync(CONFIG.historyFile) ? JSON.parse(fs.readFileSync(CONFIG.historyFile)) : { posted: [] };
+    
+    const videos = await fetchVideos();
+    const unposted = videos.filter(v => !history.posted.includes(v.id));
 
-    // 1. قراءة سجل الفيديوهات السابقة لمنع التكرار
-    let history = { posted: [] };
-    if (fs.existsSync(CONFIG.historyFile)) {
-        history = JSON.parse(fs.readFileSync(CONFIG.historyFile, 'utf8'));
+    if (unposted.length === 0) {
+        console.log("👋 لا يوجد محتوى جديد.");
+        return;
     }
 
-    const client = new DailymotionClient();
-    const arabicRegex = /[\u0600-\u06FF]/;
-    let availableVideos = [];
+    const selected = unposted[Math.floor(Math.random() * unposted.length)];
+    const m3u8Url = await getM3U8Url(selected.id);
 
-    // 2. جلب الفيديوهات من القنوات وفلترتها
-    for (const channel of CHANNELS) {
-        console.log(`📡 فحص قناة: ${channel}...`);
-        const data = await client.getUserVideos(channel);
-        if (!data.list) continue;
+    if (m3u8Url) {
+        try {
+            console.log(`📥 جاري معالجة لقطة من: ${selected.title}`);
+            const ffmpegCmd = `ffmpeg -user_agent "${CONFIG.userAgent}" -headers "Referer: https://www.dailymotion.com/" -reconnect 1 -reconnect_streamed 1 -i "${m3u8Url}" -t ${CONFIG.clipDuration} -vf "setpts=0.95*PTS,scale=iw*1.02:ih*1.02,crop=iw/1.02:ih/1.02,eq=brightness=0.03:contrast=1.05" -c:v libx264 -crf 23 -af "atempo=1.05" -y "${CONFIG.tempVideo}"`;
+            execSync(ffmpegCmd, { stdio: 'inherit' });
 
-        for (const video of data.list) {
-            // التحقق: هل العنوان عربي؟ + هل الفيديو غير موجود في السجل؟
-            if (arabicRegex.test(video.title) && !history.posted.includes(video.id)) {
-                availableVideos.push(video);
+            const success = await uploadToTikTok(CONFIG.tempVideo, selected.title);
+            if (success) {
+                history.posted.push(selected.id);
+                fs.writeFileSync(CONFIG.historyFile, JSON.stringify(history, null, 2));
+                console.log("💾 تم تحديث السجل.");
             }
-        }
+        } catch (e) { console.error("⚠️ خطأ تقني:", e.message); }
     }
-
-    if (availableVideos.length === 0) {
-        console.log("👋 لا توجد فيديوهات عربية جديدة متوفرة حالياً.");
-        return;
-    }
-
-    // 3. اختيار فيديو عشوائي
-    const selectedVideo = availableVideos[Math.floor(Math.random() * availableVideos.length)];
-    console.log(`🎯 تم اختيار فيديو: ${selectedVideo.title}`);
-    console.log(`🔗 جلب رابط M3U8 للفيديو (ID: ${selectedVideo.id})...`);
-
-    const m3u8Url = await client.getM3U8Url(selectedVideo.id);
-    if (!m3u8Url) {
-        console.error("❌ فشل في استخراج رابط M3U8 الخاص بالفيديو.");
-        return;
-    }
-
-    // 4. تحميل ومعالجة الفيديو باستخدام FFmpeg
-    // دمجنا رابط M3U8 مباشرة كمدخل (Input) مع قص المدة الزمنية وتطبيق فلاتر التيك توك
-    if (fs.existsSync(CONFIG.outputVideo)) fs.unlinkSync(CONFIG.outputVideo);
-
-    try {
-        console.log(`📥 جاري تحميل ومعالجة أول ${CONFIG.clipDuration} ثانية من الفيديو... الرجاء الانتظار.`);
-        
-        const ffmpegCmd = `ffmpeg -i "${m3u8Url}" -t ${CONFIG.clipDuration} -vf "setpts=0.95*PTS,scale=iw*1.02:ih*1.02,crop=iw/1.02:ih/1.02,eq=brightness=0.03:contrast=1.05" -c:v libx264 -crf 23 -preset fast -af "atempo=1.05" -y "${CONFIG.outputVideo}"`;
-        
-        execSync(ffmpegCmd, { stdio: 'ignore' }); // ignore لتخفيف الضغط على الكونسول
-        
-        console.log("✅ تم استخراج الفيديو ومعالجته بنجاح!");
-
-        // 5. حفظ الـ ID في السجل (وهمي في هذه التجربة، لكن ليحفظه المحرك)
-        history.posted.push(selectedVideo.id);
-        fs.writeFileSync(CONFIG.historyFile, JSON.stringify(history, null, 2));
-
-    } catch (error) {
-        console.error("❌ حدث خطأ أثناء المعالجة بواسطة FFmpeg:", error.message);
-    }
+    
+    if (fs.existsSync(CONFIG.tempVideo)) fs.unlinkSync(CONFIG.tempVideo);
 })();
