@@ -1,8 +1,29 @@
-- name: Install Dependencies
+name: ReelShort Auto-Pilot Pro
+
+on:
+  workflow_dispatch: # تشغيل يدوي
+
+jobs:
+  scrape-and-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Tools & Dependencies
         run: |
           npm init -y
-          # هذا السطر مهم جداً
-          npm pkg set type="module" 
-          npm install playwright playwright-stealth
+          # تفعيل نظام Modules لدعم كود الـ import
+          npm pkg set type="module"
+          npm install playwright
           npx playwright install chromium --with-deps
+          sudo apt-get update
           sudo apt-get install -y ffmpeg
+
+      - name: Run Autopilot
+        run: node autopilot.js
