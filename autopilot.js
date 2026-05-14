@@ -3,6 +3,7 @@ import fs from 'fs';
 import { execSync } from 'child_process';
 
 (async () => {
+    // تشغيل المتصفح مع إعدادات تخطي الحماية
     const browser = await chromium.launch({ 
         headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'] 
@@ -16,22 +17,22 @@ import { execSync } from 'child_process';
     const page = await context.newPage();
     let m3u8Url = null;
 
-    // مراقبة الشبكة لالتقاط الفيديو
+    // استماع الشبكة لاصطياد روابط m3u8 فقط
     page.on('request', request => {
         const url = request.url();
-        if ((url.includes('.m3u8') || url.includes('.mp4')) && !m3u8Url) {
-            console.log(`🎯 تم صيد الرابط: ${url}`);
-            m3u8Url = url;
+        if (url.includes('.m3u8') && !url.includes('google-analytics')) {
+            if (!m3u8Url) {
+                console.log(`🎯 تم اصطياد رابط m3u8: ${url}`);
+                m3u8Url = url;
+            }
         }
     });
 
     const shelfUrl = 'https://www.reelshort.com/ar/shelf/%D9%85%D8%AF%D8%A8%D9%84%D8%AC-short-movies-dramas-118859';
 
     try {
-        console.log("🔍 فتح صفحة الرف...");
-        await page.goto(shelfUrl, { waitUntil: 'networkidle' });
-        await page.mouse.wheel(0, 2000); // تمرير لتحميل الصور والروابط
-        await page.waitForTimeout(2000);
+        console.log("🔍 الدخول لصفحة الرف...");
+        await page.goto(shelfUrl, { waitUntil: 'networkidle', timeout: 60000 });[cite: 2]
 
         const seriesLinks = await page.evaluate(() => {
             const links = Array.from(document.querySelectorAll('a[href*="/movie/"]'))
@@ -42,55 +43,49 @@ import { execSync } from 'child_process';
         console.log(`✅ وجدنا ${seriesLinks.length} مسلسل.`);
 
         for (const url of seriesLinks) {
-            console.log(`🎬 معالجة: ${url}`);
+            console.log(`🎬 معالجة المسلسل: ${url}`);
             m3u8Url = null; 
 
             try {
-                await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
-                
-                // التمرير للأسفل قليلاً لضمان ظهور قائمة الحلقات
-                await page.mouse.wheel(0, 500);
-                await page.waitForTimeout(3000);
+                await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });[cite: 2]
+                await page.waitForTimeout(5000); 
 
-                // البحث عن أي حلقة للضغط عليها (استراتيجية مرنة)
-                const episodeFound = await page.evaluate(() => {
-                    // البحث عن عناصر تحتوي على رقم الحلقة أو تبدو كأزرار حلقات
-                    const elements = Array.from(document.querySelectorAll('div, li, span, button'));
-                    const episodeBtn = elements.find(el => 
-                        (el.innerText && /الحلقة\s*1|Episode\s*1|1/.test(el.innerText)) && 
-                        el.offsetWidth > 0 && el.offsetHeight > 0
-                    );
-                    if (episodeBtn) {
-                        episodeBtn.click();
-                        return true;
-                    }
+                // النقر على الحلقة لتوليد رابط m3u8 في الشبكة
+                const clicked = await page.evaluate(() => {
+                    const btn = document.querySelector('[class*="EpisodePage_tabs_box"]');
+                    if (btn) { btn.click(); return true; }
                     return false;
                 });
 
-                if (episodeFound) {
-                    console.log("🖱️ تم النقر على الحلقة، بانتظار الرابط...");
-                    await page.waitForTimeout(12000); 
-                } else {
-                    // محاولة النقر على أي عنصر يحمل كلاس مشابه لما وجدناه سابقاً
-                    const backupBtn = await page.$('[class*="EpisodePage_tabs_box"]');
-                    if (backupBtn) {
-                        await backupBtn.click();
-                        await page.waitForTimeout(10000);
+                if (clicked) {
+                    console.log("🖱️ تم النقر. انتظار رابط m3u8...");
+                    // انتظار الرابط لمدة تصل لـ 20 ثانية
+                    for (let i = 0; i < 20; i++) {
+                        if (m3u8Url) break;
+                        await page.waitForTimeout(1000);
                     }
                 }
 
                 if (m3u8Url) {
-                    const outputName = `video_${Date.now()}.mp4`;
-                    console.log(`📥 تحميل...`);
-                    execSync(`ffmpeg -i "${m3u8Url}" -c copy -bsf:a aac_adtstoasc ${outputName} -y`, { stdio: 'ignore' });
-                    console.log(`🚀 جاهز: ${outputName}`);
-                    if (fs.existsSync(outputName)) fs.unlinkSync(outputName);
+                    const outputName = `episode_${Date.now()}.mp4`;
+                    console.log(`📥 جاري تحويل m3u8 إلى mp4...`);
+                    
+                    try {
+                        // استخدام FFmpeg لدمج القطع وتحويلها لملف واحد[cite: 2]
+                        execSync(`ffmpeg -i "${m3u8Url}" -c copy -bsf:a aac_adtstoasc ${outputName} -y`, { stdio: 'inherit' });[cite: 2]
+                        console.log(`🚀 تم التحميل والتحويل: ${outputName}`);
+                        
+                        // حذف الملف لتوفير مساحة[cite: 2]
+                        if (fs.existsSync(outputName)) fs.unlinkSync(outputName);
+                    } catch (err) {
+                        console.error("❌ خطأ FFmpeg في معالجة m3u8.");
+                    }
                 } else {
-                    console.log("⚠️ فشل استخراج الرابط (ربما الحلقة مغلقة أو محمية).");
+                    console.log("⚠️ لم يتم العثور على رابط m3u8 (تأكد من أن الحلقة مجانية).");
                 }
 
             } catch (innerError) {
-                console.log(`❌ خطأ في هذه الصفحة: ${innerError.message}`);
+                console.log(`❌ خطأ في الصفحة: ${innerError.message}`);
             }
             console.log("---");
         }
