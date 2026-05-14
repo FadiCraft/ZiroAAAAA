@@ -1,14 +1,13 @@
-name: Download ReelShort Episode
+name: ReelShort Auto-Pilot Pro
 
 on:
   workflow_dispatch:
 
 jobs:
-  scrape-and-download:
+  mega-bot:
     runs-on: ubuntu-latest
-    
     steps:
-      - name: Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Node.js
@@ -16,107 +15,134 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install Dependencies
+      - name: Install Tools
         run: |
           npm init -y
           npm install playwright
           npx playwright install chromium --with-deps
           sudo apt-get install -y ffmpeg
 
-      - name: Create Extractor Script
+      - name: Save Cookies
+        run: echo '${{ secrets.TIKTOK_COOKIES }}' > cookies.json
+
+      - name: Create Pro Script
         run: |
-          cat << 'EOF' > extractor.cjs
+          cat << 'EOF' > autopilot.cjs
           const { chromium } = require('playwright');
           const fs = require('fs');
+          const { execSync } = require('child_process');
 
           (async () => {
             const browser = await chromium.launch({ headless: true });
             const context = await browser.newContext({
               userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-              viewport: { width: 1280, height: 720 }
+              viewport: { width: 1280, height: 800 }
             });
             const page = await context.newPage();
             
-            const targetUrl = 'https://www.reelshort.com/ar/episodes/episode-1-%D8%AE%D9%8A%D8%A7%D9%86%D8%A9-%D8%A7%D9%84%D8%B9%D8%B1%D9%88%D8%B3-%D8%A8%D9%8A%D9%86-%D8%A7%D9%84%D8%B3%D9%85-%D9%88%D8%A7%D9%84%D9%81%D8%AE-6976d3d973079f59c401f6b1-fmt59elc6t?play_time=1';
+            // 1. صفحة التصنيف (Shelf)
+            const shelfUrl = 'https://www.reelshort.com/ar/shelf/%D9%85%D8%AF%D8%A8%D9%84%D8%AC-short-movies-dramas-118859';
 
             try {
-              console.log("🚀 جاري تحميل الصفحة...");
-              await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+              console.log("🔍 جاري مسح صفحة المسلسلات...");
+              await page.goto(shelfUrl, { waitUntil: 'networkidle' });
 
-              // تمرير لأسفل لضمان تحميل قائمة الحلقات والجودات
-              await page.evaluate(async () => {
-                await new Promise((resolve) => {
-                  let totalHeight = 0;
-                  let distance = 100;
-                  let timer = setInterval(() => {
-                    let scrollHeight = document.body.scrollHeight;
-                    window.scrollBy(0, distance);
-                    totalHeight += distance;
-                    if (totalHeight >= scrollHeight) {
-                      clearInterval(timer);
-                      resolve();
-                    }
-                  }, 100);
+              // استخراج روابط المسلسلات من الـ Shelf
+              const seriesLinks = await page.evaluate(() => {
+                const links = Array.from(document.querySelectorAll('h2 a[href*="/movie/"]'));
+                return links.map(a => 'https://www.reelshort.com' + a.getAttribute('href'));
+              });
+
+              console.log(`✅ وجدنا ${seriesLinks.length} مسلسل. سنبدأ بالمعالجة...`);
+
+              for (const seriesUrl of seriesLinks) {
+                console.log(`\n🎬 الدخول للمسلسل: ${seriesUrl}`);
+                await page.goto(seriesUrl, { waitUntil: 'networkidle' });
+
+                // استخراج الحلقات المجانية فقط
+                const episodes = await page.evaluate(() => {
+                  const items = Array.from(document.querySelectorAll('.EpisodePage_tabs_box__aoOUL'));
+                  return items.map((el, i) => ({
+                    index: i,
+                    isLocked: !!el.querySelector('.EpisodePage_tabs_lock__BzrE8')
+                  })).filter(ep => !ep.isLocked);
                 });
-              });
 
-              console.log("🔎 جاري البحث عن رابط m3u8...");
-              
-              // انتظار إضافي بسيط للـ JavaScript
-              await page.waitForTimeout(5000);
+                for (const ep of episodes) {
+                  const tabs = await page.$$('.EpisodePage_tabs_box__aoOUL');
+                  await tabs[ep.index].click();
+                  await page.waitForTimeout(4000);
 
-              const videoUrl = await page.evaluate(() => {
-                // البحث في جميع العناصر التي قد تحتوي على الرابط
-                const options = Array.from(document.querySelectorAll('li[url*=".m3u8"]'));
-                if (options.length > 0) {
-                  return options[0].getAttribute('url');
+                  // استخراج العنوان الكامل للحلقة
+                  const fullTitle = await page.evaluate(() => {
+                    const h1 = document.querySelector('h1.line-clamp-2');
+                    return h1 ? h1.innerText.trim() : "حلقة جديدة";
+                  });
+
+                  // استخراج رابط m3u8
+                  const m3u8Url = await page.evaluate(() => {
+                    const li = document.querySelector('li[url*=".m3u8"]');
+                    return li ? li.getAttribute('url') : null;
+                  });
+
+                  if (m3u8Url) {
+                    const fileName = `video.mp4`;
+                    console.log(`📥 تحميل: ${fullTitle}`);
+                    
+                    try {
+                      execSync(`ffmpeg -i "${m3u8Url}" -c copy -bsf:a aac_adtstoasc "${fileName}"`);
+                      
+                      // الرفع لتيك توك
+                      await uploadToTikTok(fileName, `${fullTitle} #مسلسلات_مدبلجة #reelshort #kiro_zozo`, browser);
+                      
+                      fs.unlinkSync(fileName);
+                      
+                      console.log("⏳ انتظار ساعة قبل الحلقة القادمة (جدولة)...");
+                      // ملاحظة: الأكشن سيتوقف إذا طالت المدة جداً، لذا يفضل تقليلها لـ 5 دقائق للتجربة
+                      await new Promise(r => setTimeout(r, 300000)); // 5 دقائق للتجربة
+                    } catch (e) {
+                      await page.screenshot({ path: `error_${ep.index}.png` });
+                      console.error(`❌ فشل في ${fullTitle}: ${e.message}`);
+                    }
+                  }
                 }
-                // محاولة أخرى في حال كان الرابط في مكان آخر
-                const allElements = Array.from(document.querySelectorAll('*'));
-                for (let el of allElements) {
-                  const urlAttr = el.getAttribute('url');
-                  if (urlAttr && urlAttr.includes('.m3u8')) return urlAttr;
-                }
-                return null;
-              });
-
-              if (videoUrl) {
-                console.log("✅ تم العثور على الرابط: " + videoUrl);
-                fs.writeFileSync('video_url.txt', videoUrl);
-              } else {
-                // التقاط صورة للشاشة في حال الفشل لمعرفة ما يراه البوت (اختياري للـ Debugging)
-                await page.screenshot({ path: 'failure_screenshot.png' });
-                console.error("❌ لم يتم العثور على الرابط. تأكد من أن الحلقة مجانية.");
-                process.exit(1);
               }
-            } catch (error) {
-              console.error("⚠️ خطأ تقني: " + error.message);
-              process.exit(1);
+            } catch (err) {
+              console.error("⚠️ خطأ عام: " + err.message);
             } finally {
               await browser.close();
             }
           })();
+
+          async function uploadToTikTok(videoPath, caption, browser) {
+            const uploadContext = await browser.newContext({ storageState: 'cookies.json' });
+            const page = await uploadContext.newPage();
+            try {
+              await page.goto('https://www.tiktok.com/tiktokv/main/web/app/v2/publish', { waitUntil: 'networkidle' });
+              const fileInput = await page.locator('input[type="file"]');
+              await fileInput.setInputFiles(videoPath);
+              
+              await page.waitForSelector('.preview-v2', { timeout: 60000 });
+              await page.locator('.public-DraftEditor-content').fill(caption);
+              
+              await page.click('button:has-text("Post")');
+              console.log("🎉 تم النشر على تيك توك!");
+              await page.waitForTimeout(5000);
+            } catch (e) {
+              await page.screenshot({ path: 'tiktok_fail.png' });
+              throw e;
+            } finally {
+              await uploadContext.close();
+            }
+          }
           EOF
 
-      - name: Run Extraction
-        run: node extractor.cjs
+      - name: Run Auto-Pilot
+        run: node autopilot.cjs
 
-      - name: Download and Save Locally
-        run: |
-          if [ -f video_url.txt ]; then
-            M3U8_URL=$(cat video_url.txt)
-            echo "📥 بدء تحميل الفيديو..."
-            # خيار -protocol_whitelist للسماح بتحميل الملفات عبر الشبكة
-            ffmpeg -protocol_whitelist file,http,https,tcp,tls,crypto -i "$M3U8_URL" -c copy -bsf:a aac_adtstoasc "episode_1.mp4"
-          else
-            echo "❌ ملف URL غير موجود."
-            exit 1
-          fi
-
-      - name: Upload Video
+      - name: Upload Logs on Failure
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: ReelShort-Video
-          path: |
-            episode_1.mp4
-            failure_screenshot.png
+          name: Failure-Screenshots
+          path: "*.png"
