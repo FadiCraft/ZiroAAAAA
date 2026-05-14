@@ -1,12 +1,14 @@
 name: Download ReelShort Episode
+
 on:
-  workflow_dispatch:
+  workflow_dispatch: # تشغيل يدوي
 
 jobs:
   scrape-and-download:
     runs-on: ubuntu-latest
+    
     steps:
-      - name: Checkout
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Setup Node.js
@@ -21,18 +23,63 @@ jobs:
           npx playwright install chromium --with-deps
           sudo apt-get install -y ffmpeg
 
-      - name: Run Extraction Script
-        id: extract
+      - name: Create Extractor Script
+        run: |
+          cat << 'EOF' > extractor.js
+          const { chromium } = require('playwright');
+          const fs = require('fs');
+
+          (async () => {
+            const browser = await chromium.launch({ headless: true });
+            const page = await browser.newPage();
+            
+            // الرابط المستهدف
+            const targetUrl = 'https://www.reelshort.com/ar/episodes/episode-1-%D8%AE%D9%8A%D8%A7%D9%86%D8%A9-%D8%A7%D9%84%D8%B9%D8%B1%D9%88%D8%B3-%D8%A8%D9%8A%D9%86-%D8%A7%D9%84%D8%B3%D9%85-%D9%88%D8%A7%D9%84%D9%81%D8%AE-6976d3d973079f59c401f6b1-fmt59elc6t?play_time=1';
+
+            try {
+              console.log("Opening page...");
+              // استخدام User-Agent حقيقي لتجنب الحظر
+              await page.setExtraHTTPHeaders({
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
+              });
+
+              await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 60000 });
+
+              // ننتظر ظهور عنصر الـ m3u8 في الـ HTML
+              await page.waitForSelector('li.option-item', { timeout: 15000 });
+
+              const videoUrl = await page.evaluate(() => {
+                const item = document.querySelector('li.option-item[url*=".m3u8"]');
+                return item ? item.getAttribute('url') : null;
+              });
+
+              if (videoUrl) {
+                console.log("Found URL: " + videoUrl);
+                fs.writeFileSync('video_url.txt', videoUrl);
+              } else {
+                throw new Error("M3U8 URL not found in the page structure.");
+              }
+            } catch (error) {
+              console.error("Error during extraction: " + error.message);
+              process.exit(1);
+            } finally {
+              await browser.close();
+            }
+          })();
+          EOF
+
+      - name: Run Extraction
         run: node extractor.js
 
-      - name: Download Video with FFmpeg
+      - name: Download and Convert to MP4
         run: |
-          # سيتم قراءة الرابط من ملف مؤقت تم إنشاؤه بواسطة سكريبت JS
           M3U8_URL=$(cat video_url.txt)
-          ffmpeg -i "$M3U8_URL" -c copy "episode_1.mp4"
+          echo "Starting download for: $M3U8_URL"
+          # استخدام ffmpeg لتحميل ودمج الفيديو
+          ffmpeg -i "$M3U8_URL" -c copy -bsf:a aac_adtstoasc "episode_1.mp4"
 
-      - name: Upload Result
+      - name: Upload Video Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: final-video
+          name: ReelShort-Video
           path: episode_1.mp4
