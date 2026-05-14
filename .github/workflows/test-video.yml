@@ -1,54 +1,38 @@
 name: Download ReelShort Episode
-
 on:
-  workflow_dispatch: # يتيح لك تشغيل الأكشن يدوياً وإدخال الرابط
+  workflow_dispatch:
 
 jobs:
-  download:
+  scrape-and-download:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          python-version: '3.x'
+          node-version: '20'
 
       - name: Install Dependencies
         run: |
-          sudo apt-get update
+          npm init -y
+          npm install playwright
+          npx playwright install chromium --with-deps
           sudo apt-get install -y ffmpeg
-          pip install yt-dlp
 
-      - name: Download Video
+      - name: Run Extraction Script
+        id: extract
+        run: node extractor.js
+
+      - name: Download Video with FFmpeg
         run: |
-          # هنا نضع الرابط الذي يحتوي على الـ m3u8 من هيكل الصفحة
-          # سأقوم باستخراج الرابط مباشرة باستخدام python من كود الـ HTML الذي زودتني به
-          
-          python3 -c "
-          import re
-          html_content = '''${{ secrets.HTML_SNIPPET }}''' # سنستخدم سكرت لتخزين الكود لتجنب مشاكل الرموز
-          match = re.search(r'url=\"(https?://[^\"]+\.m3u8)\"', html_content)
-          if match:
-              print(match.group(1))
-          else:
-              print('No URL found')
-          " > video_url.txt
+          # سيتم قراءة الرابط من ملف مؤقت تم إنشاؤه بواسطة سكريبت JS
+          M3U8_URL=$(cat video_url.txt)
+          ffmpeg -i "$M3U8_URL" -c copy "episode_1.mp4"
 
-          VIDEO_URL=$(cat video_url.txt)
-          
-          if [ "$VIDEO_URL" != "No URL found" ]; then
-            echo "Downloading: $VIDEO_URL"
-            yt-dlp -o "episode_1.mp4" "$VIDEO_URL"
-          else
-            echo "Failed to extract M3U8 URL"
-            exit 1
-          fi
-
-      - name: Upload Video Artifact
+      - name: Upload Result
         uses: actions/upload-artifact@v4
         with:
-          name: reelshort-video
+          name: final-video
           path: episode_1.mp4
