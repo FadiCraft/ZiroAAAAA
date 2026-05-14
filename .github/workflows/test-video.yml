@@ -1,29 +1,27 @@
-name: ReelShort Auto-Pilot Pro
+name: ReelShort m3u8 Downloader
 
 on:
-  workflow_dispatch: # تشغيل يدوي
+  workflow_dispatch:
 
 jobs:
-  scrape-and-upload:
+  scrape:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4[cite: 1]
 
-      - name: Setup Node.js
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '20'[cite: 1]
 
-      - name: Install Tools & Dependencies
+      - name: Install Tools
         run: |
-          npm init -y
-          # تفعيل نظام Modules لدعم كود الـ import
-          npm pkg set type="module"
-          npm install playwright
-          npx playwright install chromium --with-deps
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          npm init -y[cite: 1]
+          npm pkg set type="module"[cite: 1]
+          npm install playwright[cite: 1]
+          npx playwright install chromium --with-deps[cite: 1]
+          sudo apt-get update && sudo apt-get install -y ffmpeg[cite: 1, 2]
 
-      - name: Run Autopilot
-        run: node autopilot.js
+      - name: Run Script
+        run: node autopilot.js[cite: 1]
