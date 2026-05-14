@@ -30,37 +30,67 @@ jobs:
           const fs = require('fs');
 
           (async () => {
-            // إطلاق المتصفح
             const browser = await chromium.launch({ headless: true });
             const context = await browser.newContext({
-              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
+              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+              viewport: { width: 1280, height: 720 }
             });
             const page = await context.newPage();
             
             const targetUrl = 'https://www.reelshort.com/ar/episodes/episode-1-%D8%AE%D9%8A%D8%A7%D9%86%D8%A9-%D8%A7%D9%84%D8%B9%D8%B1%D9%88%D8%B3-%D8%A8%D9%8A%D9%86-%D8%A7%D9%84%D8%B3%D9%85-%D9%88%D8%A7%D9%84%D9%81%D8%AE-6976d3d973079f59c401f6b1-fmt59elc6t?play_time=1';
 
             try {
-              console.log("جارٍ فتح الصفحة واستخراج الرابط...");
-              await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 60000 });
+              console.log("🚀 جاري تحميل الصفحة...");
+              await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-              // انتظار تحميل العناصر التي تحتوي على الرابط
-              await page.waitForSelector('li.option-item', { timeout: 30000 });
+              // تمرير لأسفل لضمان تحميل قائمة الحلقات والجودات
+              await page.evaluate(async () => {
+                await new Promise((resolve) => {
+                  let totalHeight = 0;
+                  let distance = 100;
+                  let timer = setInterval(() => {
+                    let scrollHeight = document.body.scrollHeight;
+                    window.scrollBy(0, distance);
+                    totalHeight += distance;
+                    if (totalHeight >= scrollHeight) {
+                      clearInterval(timer);
+                      resolve();
+                    }
+                  }, 100);
+                });
+              });
+
+              console.log("🔎 جاري البحث عن رابط m3u8...");
+              
+              // انتظار إضافي بسيط للـ JavaScript
+              await page.waitForTimeout(5000);
 
               const videoUrl = await page.evaluate(() => {
-                // البحث عن العنصر الذي يحتوي على رابط m3u8
-                const item = document.querySelector('li.option-item[url*=".m3u8"]');
-                return item ? item.getAttribute('url') : null;
+                // البحث في جميع العناصر التي قد تحتوي على الرابط
+                const options = Array.from(document.querySelectorAll('li[url*=".m3u8"]'));
+                if (options.length > 0) {
+                  return options[0].getAttribute('url');
+                }
+                // محاولة أخرى في حال كان الرابط في مكان آخر
+                const allElements = Array.from(document.querySelectorAll('*'));
+                for (let el of allElements) {
+                  const urlAttr = el.getAttribute('url');
+                  if (urlAttr && urlAttr.includes('.m3u8')) return urlAttr;
+                }
+                return null;
               });
 
               if (videoUrl) {
-                console.log("تم العثور على الرابط بنجاح: " + videoUrl);
+                console.log("✅ تم العثور على الرابط: " + videoUrl);
                 fs.writeFileSync('video_url.txt', videoUrl);
               } else {
-                console.error("لم يتم العثور على عنصر li يحتوي على رابط m3u8");
+                // التقاط صورة للشاشة في حال الفشل لمعرفة ما يراه البوت (اختياري للـ Debugging)
+                await page.screenshot({ path: 'failure_screenshot.png' });
+                console.error("❌ لم يتم العثور على الرابط. تأكد من أن الحلقة مجانية.");
                 process.exit(1);
               }
             } catch (error) {
-              console.error("حدث خطأ: " + error.message);
+              console.error("⚠️ خطأ تقني: " + error.message);
               process.exit(1);
             } finally {
               await browser.close();
@@ -75,16 +105,18 @@ jobs:
         run: |
           if [ -f video_url.txt ]; then
             M3U8_URL=$(cat video_url.txt)
-            echo "جارٍ التحميل من: $M3U8_URL"
-            # تحميل الفيديو وحفظه باسم episode_1.mp4 في مجلد المشروع
-            ffmpeg -i "$M3U8_URL" -c copy -bsf:a aac_adtstoasc "episode_1.mp4"
+            echo "📥 بدء تحميل الفيديو..."
+            # خيار -protocol_whitelist للسماح بتحميل الملفات عبر الشبكة
+            ffmpeg -protocol_whitelist file,http,https,tcp,tls,crypto -i "$M3U8_URL" -c copy -bsf:a aac_adtstoasc "episode_1.mp4"
           else
-            echo "خطأ: لم يتم العثور على ملف video_url.txt"
+            echo "❌ ملف URL غير موجود."
             exit 1
           fi
 
-      - name: Upload Video Artifact
+      - name: Upload Video
         uses: actions/upload-artifact@v4
         with:
-          name: ReelShort-Episode-1
-          path: episode_1.mp4
+          name: ReelShort-Video
+          path: |
+            episode_1.mp4
+            failure_screenshot.png
