@@ -1,10 +1,10 @@
 name: ReelShort Auto-Pilot Pro
 
 on:
-  workflow_dispatch: # يتيح لك تشغيل الكود يدوياً من تبويب Actions
+  workflow_dispatch: # هذا السطر هو المسؤول عن إظهار زر التشغيل اليدوي
 
 permissions:
-  contents: write # إعطاء صلاحية للكود لإنشاء وحذف ملفات الفيديو
+  contents: write
 
 jobs:
   scrape-and-convert:
@@ -29,6 +29,3 @@ jobs:
 
       - name: Run Autopilot
         run: node autopilot.js[cite: 1]
-        env:
-          # إذا كان الكود يحتاج لاتصال خارجي أو مفاتيح، تضعها هنا
-          NODE_ENV: production
