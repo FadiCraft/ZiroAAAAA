@@ -1,10 +1,10 @@
 name: ReelShort Auto-Pilot Pro
 
 on:
-  workflow_dispatch: # هذا السطر هو المسؤول عن إظهار زر التشغيل اليدوي
+  workflow_dispatch: # هذا السطر يفعل زر "Run workflow"
 
 permissions:
-  contents: write
+  contents: write # للسماح للسكريبت بحفظ الفيديوهات
 
 jobs:
   scrape-and-convert:
@@ -22,8 +22,8 @@ jobs:
         run: |
           npm init -y
           npm pkg set type="module"
-          npm install playwright
-          npx playwright install chromium --with-deps
+          npm install playwright[cite: 1]
+          npx playwright install chromium --with-deps[cite: 1]
           sudo apt-get update
           sudo apt-get install -y ffmpeg[cite: 1, 2]
 
