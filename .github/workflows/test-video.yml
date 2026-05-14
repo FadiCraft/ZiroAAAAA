@@ -1,4 +1,4 @@
-name: ReelShort Auto-Pilot Pro
+name: ReelShort Mega Bot
 
 on:
   workflow_dispatch:
@@ -15,17 +15,14 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install Tools
+      - name: Install Dependencies
         run: |
-          npm init -y[cite: 1]
+          npm init -y
           npm install playwright[cite: 1]
           npx playwright install chromium --with-deps[cite: 1]
-          sudo apt-get update && sudo apt-get install -y ffmpeg[cite: 1, 2]
+          sudo apt-get update && sudo apt-get install -y ffmpeg
 
-      - name: Save Cookies
-        run: echo '${{ secrets.TIKTOK_COOKIES }}' > cookies.json
-
-      - name: Create Pro Script
+      - name: Create Autopilot Script
         run: |
           cat << 'EOF' > autopilot.cjs
           const { chromium } = require('playwright');
@@ -33,123 +30,81 @@ jobs:
           const { execSync } = require('child_process');
 
           (async () => {
+            // تشغيل المتصفح مع محاكاة مستخدم حقيقي[cite: 1, 2]
             const browser = await chromium.launch({ headless: true });
             const context = await browser.newContext({
-              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-              viewport: { width: 1280, height: 800 }
+              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
             });
             const page = await context.newPage();
             
-            let currentM3u8 = null;
+            let capturedM3u8 = null;
 
-            // تفعيل مراقبة الشبكة لاصطياد الرابط[cite: 2]
-            page.on('request', request => {
-              const url = request.url();
-              if (url.includes('.m3u8') && !url.includes('analytics')) {
-                currentM3u8 = url;
+            // مراقبة الشبكة فوراً لاصطياد أي ملف m3u8[cite: 2]
+            page.on('request', req => {
+              const url = req.url();
+              if (url.includes('.m3u8') && !url.includes('google-analytics')) {
+                capturedM3u8 = url;
+                console.log("🎯 تم صيد الرابط بنجاح!");
               }
             });
 
             const shelfUrl = 'https://www.reelshort.com/ar/shelf/%D9%85%D8%AF%D8%A8%D9%84%D8%AC-short-movies-dramas-118859';
 
             try {
-              console.log("🔍 جاري فحص صفحة المسلسلات...");
+              console.log("🔍 الدخول لصفحة المسلسلات...");
               await page.goto(shelfUrl, { waitUntil: 'networkidle' });[cite: 2]
 
+              // استخراج روابط المسلسلات[cite: 2]
               const seriesLinks = await page.evaluate(() => {
-                const links = Array.from(document.querySelectorAll('a[href*="/movie/"]'));
-                return [...new Set(links.map(a => 'https://www.reelshort.com' + a.getAttribute('href')))];
+                const anchors = Array.from(document.querySelectorAll('a[href*="/movie/"]'));
+                return [...new Set(anchors.map(a => a.href))];
               });
 
-              console.log(`✅ تم العثور على ${seriesLinks.length} مسلسل.`);
+              for (const url of seriesLinks) {
+                console.log(`🎬 فتح المسلسل: ${url}`);
+                capturedM3u8 = null;
+                
+                await page.goto(url, { waitUntil: 'domcontentloaded' });[cite: 2]
+                await page.waitForTimeout(5000); 
 
-              for (const seriesUrl of seriesLinks) {
-                console.log(`\n🎬 الدخول للمسلسل: ${seriesUrl}`);
-                await page.goto(seriesUrl, { waitUntil: 'networkidle' });[cite: 2]
+                // الضغط على أول حلقة متاحة لتفعيل المشغل[cite: 2]
+                await page.click('[class*="EpisodePage_tabs_box"]', { timeout: 5000 }).catch(() => {});
 
-                // استخراج الحلقات المجانية بناءً على النص أو الأيقونات
-                const episodes = await page.evaluate(() => {
-                  const items = Array.from(document.querySelectorAll('.EpisodePage_tabs_box__aoOUL'));
-                  return items.map((el, i) => ({
-                    index: i,
-                    isLocked: !!el.querySelector('.EpisodePage_tabs_lock__BzrE8'),
-                    title: el.innerText.trim()
-                  })).filter(ep => !ep.isLocked);
-                });
-
-                for (const ep of episodes) {
-                  currentM3u8 = null; // تصفير الرابط لكل حلقة جديدة
-                  console.log(`📺 معالجة الحلقة: ${ep.title}`);
-                  
-                  const tabs = await page.$$('.EpisodePage_tabs_box__aoOUL');
-                  await tabs[ep.index].click();
-                  
-                  // الانتظار حتى يظهر الرابط في الشبكة[cite: 2]
-                  let retries = 0;
-                  while (!currentM3u8 && retries < 10) {
-                    await page.waitForTimeout(2000);
-                    retries++;
-                  }
-
-                  if (currentM3u8) {
-                    const fileName = `video.mp4`;
-                    console.log(`📥 جاري تحميل الفيديو من الرابط المكتشف...`);
-                    
-                    try {
-                      // تحميل باستخدام ffmpeg[cite: 2]
-                      execSync(`ffmpeg -i "${currentM3u8}" -c copy -bsf:a aac_adtstoasc "${fileName}" -y`);
-                      
-                      console.log(`🚀 جاري الرفع لتيك توك: ${ep.title}`);
-                      await uploadToTikTok(fileName, `${ep.title} #reelshort #مسلسلات_مدبلجة`, browser);
-                      
-                      fs.unlinkSync(fileName);
-                      console.log("✅ تم النشر والحذف. انتظار 5 دقائق...");
-                      await page.waitForTimeout(300000); 
-                    } catch (e) {
-                      console.error(`❌ خطأ في معالجة الحلقة: ${e.message}`);
-                    }
-                  } else {
-                    console.log("⚠️ لم يتم اصطياد رابط m3u8 لهذه الحلقة.");
-                  }
+                // انتظار صيد الرابط من الشبكة لمدة 15 ثانية
+                for (let i = 0; i < 15; i++) {
+                  if (capturedM3u8) break;
+                  await page.waitForTimeout(1000);
                 }
+
+                if (capturedM3u8) {
+                  const videoFile = `video_${Date.now()}.mp4`;
+                  console.log("📥 جاري تحويل البث إلى mp4...");
+                  
+                  try {
+                    // التحويل باستخدام ffmpeg
+                    execSync(`ffmpeg -i "${capturedM3u8}" -c copy -bsf:a aac_adtstoasc "${videoFile}" -y`, { stdio: 'inherit' });
+                    console.log(`✅ الملف جاهز: ${videoFile}`);
+                    
+                    // هنا تضع كود الرفع الخاص بك (uploadToTikTok)[cite: 1]
+                    
+                    if (fs.existsSync(videoFile)) fs.unlinkSync(videoFile);
+                  } catch (ffmpegErr) {
+                    console.error("❌ فشل FFmpeg.");
+                  }
+                } else {
+                  console.log("⚠️ فشل العثور على رابط m3u8 (قد تكون الحلقة مدفوعة).");
+                }
+                console.log("---");
               }
             } catch (err) {
-              console.error("⚠️ خطأ عام: " + err.message);
+              console.error("❌ خطأ عام: " + err.message);
             } finally {
               await browser.close();
             }
           })();
-
-          async function uploadToTikTok(videoPath, caption, browser) {
-            const uploadContext = await browser.newContext({ storageState: 'cookies.json' });
-            const page = await uploadContext.newPage();
-            try {
-              await page.goto('https://www.tiktok.com/tiktokv/main/web/app/v2/publish', { waitUntil: 'networkidle' });
-              const fileInput = await page.locator('input[type="file"]');
-              await fileInput.setInputFiles(videoPath);
-              
-              await page.waitForSelector('button:has-text("Post")', { timeout: 90000 });
-              await page.locator('.public-DraftEditor-content').fill(caption);
-              
-              await page.waitForTimeout(5000); // وقت إضافي لمعالجة الفيديو
-              await page.click('button:has-text("Post")');
-              console.log("🎉 تم النشر بنجاح!");
-              await page.waitForTimeout(10000);
-            } catch (e) {
-              await page.screenshot({ path: 'tiktok_fail.png' });
-              console.error("❌ فشل الرفع لتيك توك");
-            } finally {
-              await uploadContext.close();
-            }
-          }
           EOF
 
-      - name: Run Auto-Pilot
+      - name: Run Script
         run: node autopilot.cjs[cite: 1]
-
-      - name: Upload Logs on Failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Failure-Screenshots
-          path: "*.png"
+        env:
+          TIKTOK_COOKIES: ${{ secrets.TIKTOK_COOKIES }}
