@@ -1,51 +1,107 @@
-// === هذا السطر السحري يحل مشكلة المسار نهائياً في منصة ريندر ===
+// === هذا السطر يحل مشكلة المتصفح في ريندر ===
 const path = require('path');
 process.env.PUPPETEER_CACHE_DIR = path.join(__dirname, '.cache', 'puppeteer');
-// =========================================================
+// ============================================
 
 const express = require('express');
-const cors = require('cors');
 const puppeteer = require('puppeteer');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors());
-app.use(express.json());
-
 const BASE_URL = 'https://fabor-tv.to/matches-today/';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
+// دالة مساعدة للنوم (بديلة عن waitForTimeout)
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// Options لإطلاق المتصفح بشكل خفيف
-const puppeteerOptions = {
-    headless: "new",
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null,
-    args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--disable-gpu'
-    ]
-};
+// دالة التقاط الروابط من الشبكة (كما هي من الكود الخاص بك)
+async function getDirectStream(browser, iframeUrl) {
+    if (!iframeUrl) return "";
+    const fullIframeUrl = iframeUrl.startsWith('//') ? `https:${iframeUrl}` : iframeUrl;
 
-// 1️⃣ API: جلب قائمة المباريات المباشرة من الصفحة الرئيسية
+    return new Promise(async (resolve) => {
+        let found = false;
+        let page;
+        const timeout = setTimeout(() => {
+            if (!found && page) {
+                page.close().catch(() => {});
+                resolve("");
+            }
+        }, 15000);
+
+        try {
+            page = await browser.newPage();
+            await page.setUserAgent(USER_AGENT);
+            
+            await page.setRequestInterception(true);
+            page.on('request', (request) => {
+                const url = request.url();
+                if ((url.includes('.m3u8') || url.includes('m3u8')) && !found) {
+                    found = true;
+                    clearTimeout(timeout);
+                    resolve(url);
+                    page.close().catch(() => {});
+                }
+                request.continue();
+            });
+
+            await page.goto(fullIframeUrl, { 
+                waitUntil: 'networkidle2', 
+                timeout: 30000 
+            });
+            
+            await sleep(5000);
+            
+            try {
+                const playButton = await page.$('button[aria-label="Play"], .play-button, .vjs-big-play-button');
+                if (playButton) {
+                    await playButton.click();
+                    await sleep(3000);
+                }
+            } catch (e) {
+                // تجاهل الخطأ
+            }
+            
+        } catch (e) {
+            clearTimeout(timeout);
+            if (page) await page.close().catch(() => {});
+            resolve("");
+        }
+    });
+}
+
+// الـ API الرئيسي المباشر (بدون تخزين)
 app.get('/api/matches', async (req, res) => {
     let browser;
     try {
-        console.log("🔍 جاري جلب المباريات مباشرة...");
-        browser = await puppeteer.launch(puppeteerOptions);
+        console.log("🚀 جاري تهيئة المتصفح وبدء الجلب المباشر...");
+        browser = await puppeteer.launch({ 
+            headless: "new", 
+            args: [
+                '--no-sandbox', 
+                '--disable-setuid-sandbox',
+                '--disable-blink-features=AutomationControlled',
+                '--disable-web-security',
+                '--disable-features=IsolateOrigins,site-per-process'
+            ] 
+        });
+
         const page = await browser.newPage();
         await page.setUserAgent(USER_AGENT);
+        await page.setViewport({ width: 1366, height: 768 });
         
-        await page.goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
+        console.log("🔍 جاري فتح الموقع الرئيسي...");
+        await page.goto(BASE_URL, { waitUntil: 'networkidle2', timeout: 30000 });
+        
+        await sleep(3000);
 
         const matches = await page.evaluate(() => {
             const items = [];
             document.querySelectorAll('.AY_Match').forEach(el => {
                 const linkElement = el.querySelector('a');
+                const matchUrl = linkElement ? linkElement.href : "";
+
                 items.push({
                     team1: el.querySelector('.TM1 .TM_Name')?.innerText.trim() || "",
                     team1Logo: el.querySelector('.TM1 .TM_Logo img')?.src || "",
@@ -54,107 +110,94 @@ app.get('/api/matches', async (req, res) => {
                     time: el.querySelector('.MT_Time span')?.innerText.trim() || "",
                     status: el.querySelector('.MT_Stat')?.innerText.trim() || "",
                     league: el.querySelector('.TourName')?.innerText.trim() || "",
-                    matchUrl: linkElement ? linkElement.href : ""
+                    matchUrl: matchUrl,
+                    streamUrl: "",
+                    channel: "غير متوفر",
+                    LastTime: new Date().toLocaleString('ar-EG'),
+                    stream: ""
                 });
             });
             return items;
         });
 
-        res.json({
-            success: true,
-            count: matches.length,
-            data: matches
-        });
+        console.log(`✅ تم العثور على ${matches.length} مباريات، جاري استخراج روابط m3u8...`);
 
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    } finally {
-        if (browser) await browser.close();
-    }
-});
+        // المرور على كل مباراة لاستخراج الـ m3u8
+        for (let i = 0; i < matches.length; i++) {
+            const match = matches[i];
+            if (match.matchUrl) {
+                console.log(`\n🔗 [${i + 1}/${matches.length}] فحص مباراة: ${match.team1} ضد ${match.team2}`);
+                
+                let frameUrl = "";
+                let matchPage;
 
-// 2️⃣ API: جلب رابط البث M3U8 لمباراة واحدة
-app.get('/api/stream', async (req, res) => {
-    const { matchUrl } = req.query;
+                try {
+                    matchPage = await browser.newPage();
+                    await matchPage.setUserAgent(USER_AGENT);
+                    await matchPage.setViewport({ width: 1366, height: 768 });
+                    
+                    await matchPage.goto(match.matchUrl, { 
+                        waitUntil: 'networkidle2', 
+                        timeout: 30000 
+                    });
+                    
+                    await sleep(5000);
 
-    if (!matchUrl) {
-        return res.status(400).json({ success: false, error: 'الرجاء تزويد رابط المباراة عبر matchUrl' });
-    }
+                    try {
+                        await matchPage.waitForSelector('iframe#player', { 
+                            timeout: 10000,
+                            visible: true 
+                        });
+                        
+                        frameUrl = await matchPage.evaluate(() => {
+                            const iframe = document.querySelector('iframe#player');
+                            return iframe ? iframe.src : "";
+                        });
+                    } catch (err) {
+                        frameUrl = await matchPage.evaluate(() => {
+                            const iframes = document.querySelectorAll('iframe');
+                            for (let iframe of iframes) {
+                                if (iframe.src && iframe.src.includes('fabortvcdn.com')) {
+                                    return iframe.src;
+                                }
+                            }
+                            return "";
+                        });
+                    }
 
-    let browser;
-    try {
-        console.log(`🎬 جاري استخراج البث مباشرة لـ: ${matchUrl}`);
-        browser = await puppeteer.launch(puppeteerOptions);
-        
-        const matchPage = await browser.newPage();
-        await matchPage.setUserAgent(USER_AGENT);
-        
-        // 1. فتح صفحة المباراة
-        await matchPage.goto(matchUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+                    match.streamUrl = frameUrl;
 
-        let frameUrl = "";
-        try {
-            await matchPage.waitForSelector('iframe#player', { timeout: 6000, visible: true });
-            frameUrl = await matchPage.evaluate(() => {
-                const iframe = document.querySelector('iframe#player');
-                return iframe ? iframe.src : "";
-            });
-        } catch (err) {
-            frameUrl = await matchPage.evaluate(() => {
-                const iframes = document.querySelectorAll('iframe');
-                for (let iframe of iframes) {
-                    if (iframe.src && iframe.src.includes('fabortvcdn.com')) return iframe.src;
+                    if (match.streamUrl) {
+                        match.stream = await getDirectStream(browser, match.streamUrl);
+                    }
+                    
+                } catch (err) {
+                    console.log(`⚠️ خطأ في صفحة المباراة: ${err.message}`);
+                } finally {
+                    if (matchPage) await matchPage.close().catch(() => {});
                 }
-                return "";
-            });
-        }
-
-        if (!frameUrl) {
-            return res.json({ success: false, message: 'لم يتم العثور على سيرفر لهذه المباراة' });
-        }
-
-        // 2. فتح الـ iframe واستخراج ملف m3u8
-        const fullIframeUrl = frameUrl.startsWith('//') ? `https:${frameUrl}` : frameUrl;
-        const streamPage = await browser.newPage();
-        await streamPage.setUserAgent(USER_AGENT);
-
-        let m3u8Url = "";
-        await streamPage.setRequestInterception(true);
-        streamPage.on('request', (request) => {
-            const url = request.url();
-            if ((url.includes('.m3u8') || url.includes('m3u8')) && !m3u8Url) {
-                m3u8Url = url;
+                
+                await sleep(2000);
             }
-            request.continue();
-        });
-
-        await streamPage.goto(fullIframeUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
-        await sleep(3000);
-
-        // محاولة النقر للتشغيل إذا لم يظهر الرابط تلقائياً
-        if (!m3u8Url) {
-            try {
-                const playButton = await streamPage.$('button[aria-label="Play"], .play-button, .vjs-big-play-button');
-                if (playButton) {
-                    await playButton.click();
-                    await sleep(2500);
-                }
-            } catch (e) {}
         }
 
-        res.json({
-            success: true,
-            iframeUrl: frameUrl,
-            stream: m3u8Url || "لم يتم العثور على رابط m3u8 مباشر"
-        });
+        // مسح matchUrl وإرجاع النتيجة مباشرة بدون حفظ في ملف
+        const finalMatches = matches.map(({ matchUrl, ...rest }) => rest);
+
+        console.log("🎉 اكتمل الجلب وتم إرسال البيانات.");
+        
+        // إرسال البيانات للمستخدم مباشرة
+        res.json(finalMatches);
 
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        console.error('❌ خطأ فادح:', error.message);
+        res.status(500).json({ error: error.message });
     } finally {
         if (browser) await browser.close();
     }
 });
 
 app.listen(PORT, () => {
-    console.log(`🚀 API يعمل مباشرة على المنفذ: ${PORT}`);
+    console.log(`🚀 السيرفر يعمل على المنفذ: ${PORT}`);
+    console.log(`👉 ادخل إلى: http://localhost:${PORT}/api/matches`);
 });
