@@ -1,10 +1,59 @@
 const puppeteer = require('puppeteer');
-const fs = require('fs');
-const path = require('path');
+const https = require('https');
+const http = require('http');
 
 const BASE_URL = 'https://fabor-tv.to/matches-today/';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
+// دالة إرسال البيانات إلى API خارجي
+function sendDataToAPI(data, webhookUrl) {
+    return new Promise((resolve, reject) => {
+        const payload = JSON.stringify(data);
+        const url = new URL(webhookUrl);
+        
+        const options = {
+            hostname: url.hostname,
+            path: url.pathname,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(payload)
+            }
+        };
+
+        const req = https.request(options, (res) => {
+            let responseData = '';
+            res.on('data', (chunk) => responseData += chunk);
+            res.on('end', () => {
+                console.log('✅ تم إرسال البيانات بنجاح');
+                resolve(responseData);
+            });
+        });
+
+        req.on('error', (error) => {
+            console.error('❌ خطأ في إرسال البيانات:', error.message);
+            reject(error);
+        });
+
+        req.write(payload);
+        req.end();
+    });
+}
+
+// دالة حفظ البيانات في متغير بيئة (للتخزين المؤقت)
+function saveToEnvironment(data) {
+    try {
+        // تحويل البيانات إلى نص وضغطها
+        const compressed = JSON.stringify(data);
+        console.log(`💾 تم حفظ ${compressed.length} بايت في الذاكرة`);
+        console.log('📋 البيانات المحفوظة:');
+        console.log(compressed.substring(0, 500) + '...'); // طباعة أول 500 حرف
+        return true;
+    } catch (error) {
+        console.error('❌ خطأ في حفظ البيانات:', error.message);
+        return false;
+    }
+}
 
 // دالة مساعدة للنوم
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -28,7 +77,6 @@ async function getDirectStream(browser, iframeUrl) {
             page = await browser.newPage();
             await page.setUserAgent(USER_AGENT);
             
-            // اعتراض الطلبات للبحث عن m3u8
             await page.setRequestInterception(true);
             page.on('request', (request) => {
                 const url = request.url();
@@ -46,19 +94,15 @@ async function getDirectStream(browser, iframeUrl) {
                 timeout: 30000 
             });
             
-            // انتظار إضافي لتحميل المشغل
             await sleep(5000);
             
-            // محاولة النقر على زر التشغيل إذا وجد
             try {
                 const playButton = await page.$('button[aria-label="Play"], .play-button, .vjs-big-play-button');
                 if (playButton) {
                     await playButton.click();
                     await sleep(3000);
                 }
-            } catch (e) {
-                // تجاهل الخطأ
-            }
+            } catch (e) {}
             
         } catch (e) {
             clearTimeout(timeout);
@@ -70,14 +114,16 @@ async function getDirectStream(browser, iframeUrl) {
 
 async function scrapeMatches() {
     let browser;
+    const startTime = Date.now();
+    
     console.log(`🔧 بدء التشغيل في: ${new Date().toLocaleString('ar-EG')}`);
     console.log(`💻 Node Version: ${process.version}`);
     console.log(`🖥️ Platform: ${process.platform}`);
+    console.log(`📁 Current Directory: ${process.cwd()}`);
     
     try {
         console.log("🚀 جاري تهيئة المتصفح...");
         
-        // إعدادات محسنة لـ Render
         const launchOptions = {
             headless: "new",
             args: [
@@ -90,27 +136,18 @@ async function scrapeMatches() {
                 '--disable-web-security',
                 '--disable-features=IsolateOrigins,site-per-process',
                 '--single-process',
-                '--no-zygote',
-                '--disable-background-timer-throttling',
-                '--disable-backgrounding-occluded-windows',
-                '--disable-renderer-backgrounding'
+                '--no-zygote'
             ]
         };
         
-        // إضافة executablePath إذا كان محدد في المتغيرات البيئية
         if (process.env.PUPPETEER_EXECUTABLE_PATH) {
             launchOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
         }
         
         browser = await puppeteer.launch(launchOptions);
-
         const page = await browser.newPage();
         await page.setUserAgent(USER_AGENT);
         await page.setViewport({ width: 1366, height: 768 });
-        
-        // تعطيل بعض الميزات لتوفير الذاكرة
-        await page.setJavaScriptEnabled(true);
-        await page.setDefaultNavigationTimeout(30000);
         
         console.log("🔍 جاري فتح الموقع الرئيسي...");
         await page.goto(BASE_URL, { 
@@ -118,10 +155,8 @@ async function scrapeMatches() {
             timeout: 30000 
         });
         
-        // انتظار إضافي للتأكد من تحميل جميع المباريات
         await sleep(3000);
 
-        // استخراج البيانات الأساسية وروابط صفحات المباريات
         const matches = await page.evaluate(() => {
             const items = [];
             document.querySelectorAll('.AY_Match').forEach(el => {
@@ -148,7 +183,6 @@ async function scrapeMatches() {
 
         console.log(`✅ تم العثور على ${matches.length} مباريات، جاري البحث عن الروابط...`);
 
-        // المرور على كل مباراة للحصول على رابط السيرفر (iframe)
         for (let i = 0; i < matches.length; i++) {
             const match = matches[i];
             if (match.matchUrl) {
@@ -164,23 +198,19 @@ async function scrapeMatches() {
                     
                     console.log(`   📄 فتح صفحة المباراة: ${match.matchUrl}`);
                     
-                    // استخدام networkidle2 للانتظار حتى يكتمل تحميل الصفحة
                     await matchPage.goto(match.matchUrl, { 
                         waitUntil: 'networkidle2', 
                         timeout: 30000 
                     });
                     
-                    // انتظار إضافي لضمان تنفيذ JavaScript
                     await sleep(5000);
 
-                    // محاولة انتظار ظهور عنصر iframe#player مع مهلة زمنية
                     try {
                         await matchPage.waitForSelector('iframe#player', { 
                             timeout: 10000,
                             visible: true 
                         });
                         
-                        // استخراج رابط السيرفر من iframe#player
                         frameUrl = await matchPage.evaluate(() => {
                             const iframe = document.querySelector('iframe#player');
                             return iframe ? iframe.src : "";
@@ -188,9 +218,8 @@ async function scrapeMatches() {
                         
                         console.log(`   ✅ تم العثور على iframe: ${frameUrl}`);
                     } catch (err) {
-                        console.log(`   ⚠️ لم يتم العثور على iframe#player (Timeout): ${err.message}`);
+                        console.log(`   ⚠️ لم يتم العثور على iframe#player: ${err.message}`);
                         
-                        // محاولة بديلة: البحث عن أي iframe
                         frameUrl = await matchPage.evaluate(() => {
                             const iframes = document.querySelectorAll('iframe');
                             for (let iframe of iframes) {
@@ -208,7 +237,6 @@ async function scrapeMatches() {
 
                     match.streamUrl = frameUrl;
 
-                    // إذا وجدنا رابط السيرفر، نقوم بتشغيل دالة استخراج الـ m3u8
                     if (match.streamUrl) {
                         console.log(`   ⏳ جاري استخراج بث الـ m3u8 من المشغل...`);
                         match.stream = await getDirectStream(browser, match.streamUrl);
@@ -222,47 +250,72 @@ async function scrapeMatches() {
                     }
                     
                 } catch (err) {
-                    console.log(`   ⚠️ حدث خطأ أثناء فتح صفحة المباراة: ${err.message}`);
+                    console.log(`   ⚠️ حدث خطأ: ${err.message}`);
                 } finally {
                     if (matchPage) await matchPage.close().catch(() => {});
                 }
                 
-                // تأخير بسيط بين كل مباراة لتجنب الحظر
                 await sleep(2000);
             }
         }
 
-        // مسح matchUrl من النتيجة النهائية
         const finalMatches = matches.map(({ matchUrl, ...rest }) => rest);
 
-        // حفظ النتائج
-        const outputPath = process.env.OUTPUT_PATH || path.join(__dirname, 'match1.json');
-        fs.writeFileSync(outputPath, JSON.stringify(finalMatches, null, 2), 'utf8');
+        // ============ حفظ البيانات بطرق متعددة ============
         
+        // 1. طباعة النتائج في السجلات (دائماً متاح)
         console.log("\n" + "=".repeat(50));
-        console.log("🎉 انتهى العمل. تم حفظ البيانات في match1.json");
-        console.log(`📊 إجمالي المباريات: ${finalMatches.length}`);
-        console.log(`📺 المباريات التي تم العثور على بث لها: ${finalMatches.filter(m => m.stream).length}`);
+        console.log("📊 نتائج المباريات:");
+        console.log(JSON.stringify(finalMatches, null, 2));
         console.log("=".repeat(50));
         
-        // طباعة النتائج للسجلات
-        if (finalMatches.length > 0) {
-            console.log("\n📋 ملخص المباريات:");
-            finalMatches.forEach((match, index) => {
-                console.log(`\n${index + 1}. ${match.team1} vs ${match.team2}`);
-                console.log(`   🕐 الوقت: ${match.time}`);
-                console.log(`   📊 الحالة: ${match.status}`);
-                console.log(`   🏆 الدوري: ${match.league}`);
-                console.log(`   📺 البث: ${match.stream ? '✅ متوفر' : '❌ غير متوفر'}`);
-            });
+        // 2. حفظ في متغيرات البيئة (مؤقت - للجلسة الحالية)
+        process.env.LAST_MATCHES = JSON.stringify(finalMatches);
+        
+        // 3. محاولة الحفظ في ملف (قد يفشل في Render لكن نحاول)
+        try {
+            const fs = require('fs');
+            const path = require('path');
+            const outputPath = path.join('/tmp', 'match1.json');
+            fs.writeFileSync(outputPath, JSON.stringify(finalMatches, null, 2), 'utf8');
+            console.log(`✅ تم حفظ الملف في: ${outputPath}`);
+            
+            // طباعة محتوى الملف للتأكيد
+            const savedData = fs.readFileSync(outputPath, 'utf8');
+            console.log(`📄 حجم الملف: ${savedData.length} بايت`);
+        } catch (fileError) {
+            console.log(`⚠️ لم يتم حفظ الملف (هذا طبيعي في Render): ${fileError.message}`);
+        }
+        
+        // 4. إرسال إلى Webhook إذا تم تكوينه
+        const webhookUrl = process.env.WEBHOOK_URL;
+        if (webhookUrl) {
+            try {
+                await sendDataToAPI(finalMatches, webhookUrl);
+                console.log('✅ تم إرسال البيانات إلى Webhook');
+            } catch (webhookError) {
+                console.log(`⚠️ فشل إرسال Webhook: ${webhookError.message}`);
+            }
         }
 
+        // 5. حفظ في متغير ذاكرة عالمي
+        global.matchesData = finalMatches;
+        console.log('✅ تم حفظ البيانات في الذاكرة العالمية');
+        
+        // ملخص نهائي
+        console.log("\n📈 إحصائيات:");
+        console.log(`📊 إجمالي المباريات: ${finalMatches.length}`);
+        console.log(`📺 المباريات المتاحة: ${finalMatches.filter(m => m.stream).length}`);
+        
+        const duration = (Date.now() - startTime) / 1000;
+        console.log(`⏱️ وقت التنفيذ: ${duration.toFixed(2)} ثانية`);
+        
         return finalMatches;
 
     } catch (error) {
         console.error('❌ خطأ فادح:', error.message);
         console.error('Stack:', error.stack);
-        process.exit(1);
+        throw error;
     } finally {
         if (browser) {
             await browser.close();
@@ -271,17 +324,14 @@ async function scrapeMatches() {
     }
 }
 
-// تشغيل السكربت مع إحصائيات الوقت
-const startTime = Date.now();
+// تشغيل السكربت
 scrapeMatches()
-    .then(() => {
-        const endTime = Date.now();
-        const duration = (endTime - startTime) / 1000;
-        console.log(`\n⏱️ وقت التنفيذ: ${duration.toFixed(2)} ثانية`);
-        console.log(`✅ اكتمل التنفيذ بنجاح في: ${new Date().toLocaleString('ar-EG')}`);
+    .then((data) => {
+        console.log(`\n✅ اكتمل التنفيذ بنجاح`);
+        console.log(`📝 البيانات جاهزة في السجلات أعلاه`);
         process.exit(0);
     })
     .catch((error) => {
-        console.error('❌ فشل التنفيذ:', error.message);
+        console.error(`\n❌ فشل التنفيذ: ${error.message}`);
         process.exit(1);
     });
