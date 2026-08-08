@@ -8,6 +8,7 @@
   },
   "scripts": {
     "start": "node Matchs.js",
+    "build": "npm install && npx puppeteer install",
     "start:drama": "node dramalive_api.js",
     "dev:drama": "nodemon dramalive_api.js",
     "start:scraper": "node server.js",
