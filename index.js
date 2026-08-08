@@ -1,3 +1,8 @@
+// === هذا السطر السحري يحل مشكلة المسار نهائياً في منصة ريندر ===
+const path = require('path');
+process.env.PUPPETEER_CACHE_DIR = path.join(__dirname, '.cache', 'puppeteer');
+// =========================================================
+
 const express = require('express');
 const cors = require('cors');
 const puppeteer = require('puppeteer');
@@ -26,7 +31,7 @@ const puppeteerOptions = {
     ]
 };
 
-// 1️⃣ API: جلب قائمة المباريات المباشرة من الصفحة الرئيسية (سريع جداً)
+// 1️⃣ API: جلب قائمة المباريات المباشرة من الصفحة الرئيسية
 app.get('/api/matches', async (req, res) => {
     let browser;
     try {
@@ -68,7 +73,7 @@ app.get('/api/matches', async (req, res) => {
     }
 });
 
-// 2️⃣ API: جلب رابط البث M3U8 لمباراة واحدة محددة مباشرة (On-Demand)
+// 2️⃣ API: جلب رابط البث M3U8 لمباراة واحدة
 app.get('/api/stream', async (req, res) => {
     const { matchUrl } = req.query;
 
